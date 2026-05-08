@@ -1,4 +1,11 @@
+import type { Metadata } from "next";
+import { ErrorBoundary } from "next/dist/client/components/error-boundary";
+import { cookies } from "next/headers";
+import type { SearchParams } from "nuqs";
+import { Suspense } from "react";
+import { ErrorFallback } from "@/components/error-fallback";
 import { OpenTrackerSheet } from "@/components/open-tracker-sheet";
+import { ScrollableContent } from "@/components/scrollable-content";
 import { DataTable } from "@/components/tables/tracker";
 import { Loading } from "@/components/tables/tracker/loading";
 import { TrackerCalendar } from "@/components/tracker-calendar";
@@ -7,10 +14,6 @@ import { loadSortParams } from "@/hooks/use-sort-params";
 import { loadTrackerFilterParams } from "@/hooks/use-tracker-filter-params";
 import { prefetch, trpc } from "@/trpc/server";
 import { Cookies } from "@/utils/constants";
-import type { Metadata } from "next";
-import { cookies } from "next/headers";
-import type { SearchParams } from "nuqs";
-import { Suspense } from "react";
 
 export const metadata: Metadata = {
   title: "Tracker | Midday",
@@ -27,14 +30,19 @@ export default async function Page(props: Props) {
   const weeklyCalendar = (await cookies()).get(Cookies.WeeklyCalendar);
 
   prefetch(
-    trpc.trackerProjects.get.infiniteQueryOptions({
-      ...filter,
-      sort,
-    }),
+    trpc.trackerProjects.get.infiniteQueryOptions(
+      {
+        ...filter,
+        sort,
+      },
+      {
+        getNextPageParam: ({ meta }) => meta?.cursor,
+      },
+    ),
   );
 
   return (
-    <div>
+    <ScrollableContent>
       <TrackerCalendar weeklyCalendar={weeklyCalendar?.value === "true"} />
 
       <div className="mt-14 mb-6 flex items-center justify-between space-x-4">
@@ -46,9 +54,11 @@ export default async function Page(props: Props) {
         </div>
       </div>
 
-      <Suspense fallback={<Loading />}>
-        <DataTable />
-      </Suspense>
-    </div>
+      <ErrorBoundary errorComponent={ErrorFallback}>
+        <Suspense fallback={<Loading />}>
+          <DataTable />
+        </Suspense>
+      </ErrorBoundary>
+    </ScrollableContent>
   );
 }

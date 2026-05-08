@@ -12,8 +12,7 @@ import {
 } from "@api/schemas/inbox";
 import { createAdminClient } from "@api/services/supabase";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { z } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   deleteInbox,
   getInbox,
@@ -21,6 +20,7 @@ import {
   updateInbox,
 } from "@midday/db/queries";
 import { signedUrl } from "@midday/supabase/storage";
+import { HTTPException } from "hono/http-exception";
 import { withRequiredScope } from "../middleware";
 
 const app = new OpenAPIHono<Context>();
@@ -212,7 +212,10 @@ app.openapi(
       fileName: inboxItem.fileName || inboxItem.filePath.at(-1) || null,
     };
 
-    return c.json(validateResponse(result, inboxPreSignedUrlResponseSchema));
+    return c.json(
+      validateResponse(result, inboxPreSignedUrlResponseSchema),
+      200,
+    );
   },
 );
 
@@ -246,10 +249,12 @@ app.openapi(
     const teamId = c.get("teamId");
     const { id } = c.req.valid("param");
 
-    const result = await deleteInbox(db, {
-      id,
-      teamId,
-    });
+    let result: Awaited<ReturnType<typeof deleteInbox>>;
+    try {
+      result = await deleteInbox(db, { id, teamId });
+    } catch {
+      throw new HTTPException(404, { message: "Inbox item not found" });
+    }
 
     return c.json(validateResponse(result, deleteInboxResponseSchema));
   },

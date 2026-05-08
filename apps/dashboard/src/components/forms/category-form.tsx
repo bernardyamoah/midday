@@ -1,13 +1,5 @@
 "use client";
 
-import { InputColor } from "@/components/input-color";
-import { SelectParentCategory } from "@/components/select-parent-category";
-import { SelectTaxType } from "@/components/select-tax-type";
-import { TaxRateInput } from "@/components/tax-rate-input";
-import { useCategoryParams } from "@/hooks/use-category-params";
-import { useUserQuery } from "@/hooks/use-user";
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useTRPC } from "@/trpc/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import {
   Form,
@@ -23,7 +15,15 @@ import { Switch } from "@midday/ui/switch";
 import { getTaxTypeForCountry, taxTypes } from "@midday/utils/tax";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { InputColor } from "@/components/input-color";
+import { SelectParentCategory } from "@/components/select-parent-category";
+import { SelectTaxType } from "@/components/select-tax-type";
+import { TaxRateInput } from "@/components/tax-rate-input";
+import { useCategoryParams } from "@/hooks/use-category-params";
+import { useUserQuery } from "@/hooks/use-user";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -172,6 +172,9 @@ export function CategoryForm({ data }: Props) {
                       placeholder="Report Code"
                     />
                   </FormControl>
+                  <p className="text-xs text-muted-foreground pt-1">
+                    Maps to account codes when exporting to accounting software
+                  </p>
                 </FormItem>
               )}
             />
@@ -247,7 +250,7 @@ export function CategoryForm({ data }: Props) {
                   <div className="flex items-center justify-between space-x-2">
                     <div className="space-y-0.5">
                       <FormLabel className="text-xs text-[#878787] font-normal">
-                        Exclude from Reports
+                        Exclude from reports
                       </FormLabel>
                       <div className="text-xs text-muted-foreground">
                         Transactions in this category won't appear in financial

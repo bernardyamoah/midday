@@ -1,19 +1,14 @@
 import { SupportForm } from "@/components/support-form";
-import type { Metadata } from "next";
+import { createPageMetadata } from "@/lib/metadata";
 
-export const metadata: Metadata = {
+export const metadata = createPageMetadata({
   title: "Support",
-  description: "Get help with Midday",
-};
+  description:
+    "Get help with Midday. Contact our team for assistance with any questions or issues you may have.",
+  path: "/support",
+  og: { title: "Support", description: "We're here to help" },
+});
 
-export default function Page() {
-  return (
-    <div className="max-w-[750px] m-auto">
-      <h1 className="mt-24 font-medium text-center text-5xl mb-16 leading-snug">
-        Support
-      </h1>
-
-      <SupportForm />
-    </div>
-  );
+export default function SupportPage() {
+  return <SupportForm />;
 }

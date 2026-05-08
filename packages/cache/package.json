@@ -2,6 +2,14 @@
   "name": "@midday/cache",
   "version": "0.0.1",
   "private": true,
+  "dependencies": {
+    "@midday/logger": "workspace:*"
+  },
+  "scripts": {
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit"
+  },
   "exports": {
     "./api-key-cache": "./src/api-key-cache.ts",
     "./user-cache": "./src/user-cache.ts",
@@ -9,10 +17,9 @@
     "./team-cache": "./src/team-cache.ts",
     "./team-permissions-cache": "./src/team-permissions-cache.ts",
     "./redis-client": "./src/redis-client.ts",
-    "./health": "./src/health.ts"
-  },
-  "dependencies": {
-    "redis": "^5.8.2",
-    "@types/redis": "^4.0.11"
+    "./shared-redis": "./src/shared-redis.ts",
+    "./health": "./src/health.ts",
+    "./banking-cache": "./src/banking-cache.ts",
+    "./connectors-cache": "./src/connectors-cache.ts"
   }
 }

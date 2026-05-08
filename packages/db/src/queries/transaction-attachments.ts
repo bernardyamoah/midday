@@ -1,6 +1,12 @@
-import type { Database } from "@db/client";
-import { inbox, transactionAttachments, transactions } from "@db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import type { Database } from "../client";
+import {
+  accountingSyncRecords,
+  inbox,
+  transactionAttachments,
+  transactionMatchSuggestions,
+  transactions,
+} from "../schema";
 import { createActivity } from "./activities";
 
 export type Attachment = {
@@ -32,6 +38,26 @@ export async function createAttachments(
       })),
     )
     .returning();
+
+  // Reset export status for affected transactions so they reappear in review
+  const transactionIds = [
+    ...new Set(
+      result
+        .map((a) => a.transactionId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+
+  if (transactionIds.length > 0) {
+    await db
+      .delete(accountingSyncRecords)
+      .where(
+        and(
+          inArray(accountingSyncRecords.transactionId, transactionIds),
+          eq(accountingSyncRecords.teamId, teamId),
+        ),
+      );
+  }
 
   // Create activity for each attachment created
   for (const attachment of result) {
@@ -122,7 +148,32 @@ export async function deleteAttachment(
     throw new Error("Attachment not found");
   }
 
-  // Find inbox by transaction_id and set transaction_id to null and status to pending if it exists
+  // Collect affected inbox IDs BEFORE clearing their foreign keys, so we can
+  // update the corresponding match suggestions afterwards.
+  const affectedInboxIds: string[] = [];
+  if (result.transactionId) {
+    const rows = await db
+      .select({ id: inbox.id })
+      .from(inbox)
+      .where(
+        and(
+          eq(inbox.teamId, params.teamId),
+          sql`(${inbox.attachmentId} = ${result.id} OR ${inbox.transactionId} = ${result.transactionId})`,
+        ),
+      );
+    for (const r of rows) affectedInboxIds.push(r.id);
+  }
+
+  // Update inbox items connected to this attachment
+  await db
+    .update(inbox)
+    .set({
+      attachmentId: null,
+      transactionId: null,
+      status: "pending",
+    })
+    .where(eq(inbox.attachmentId, result.id));
+
   if (result.transactionId) {
     await db
       .update(inbox)
@@ -130,7 +181,46 @@ export async function deleteAttachment(
         transactionId: null,
         status: "pending",
       })
-      .where(eq(inbox.transactionId, result.transactionId));
+      .where(
+        and(
+          eq(inbox.transactionId, result.transactionId),
+          sql`(${inbox.attachmentId} IS NULL OR ${inbox.attachmentId} != ${result.id})`,
+        ),
+      );
+  }
+
+  // Mark match suggestions as "unmatched" so retry matching can create fresh ones.
+  // Without this, createMatchSuggestion's onConflictDoUpdate silently skips rows
+  // with status "confirmed", leaving the inbox stuck in "suggested_match" with no
+  // pending suggestion the user can act on.
+  if (result.transactionId && affectedInboxIds.length > 0) {
+    for (const inboxId of affectedInboxIds) {
+      const [originalSuggestion] = await db
+        .select({ id: transactionMatchSuggestions.id })
+        .from(transactionMatchSuggestions)
+        .where(
+          and(
+            eq(transactionMatchSuggestions.inboxId, inboxId),
+            eq(
+              transactionMatchSuggestions.transactionId,
+              result.transactionId!,
+            ),
+            eq(transactionMatchSuggestions.teamId, params.teamId),
+          ),
+        )
+        .orderBy(desc(transactionMatchSuggestions.createdAt))
+        .limit(1);
+
+      if (originalSuggestion) {
+        await db
+          .update(transactionMatchSuggestions)
+          .set({
+            status: "unmatched",
+            userActionAt: new Date().toISOString(),
+          })
+          .where(eq(transactionMatchSuggestions.id, originalSuggestion.id));
+      }
+    }
   }
 
   // Delete tax_rate and tax_type from the transaction
@@ -139,6 +229,16 @@ export async function deleteAttachment(
       .update(transactions)
       .set({ taxRate: null, taxType: null })
       .where(eq(transactions.id, result.transactionId));
+
+    // Reset export status so transaction reappears in review
+    await db
+      .delete(accountingSyncRecords)
+      .where(
+        and(
+          eq(accountingSyncRecords.transactionId, result.transactionId),
+          eq(accountingSyncRecords.teamId, params.teamId),
+        ),
+      );
   }
 
   // Delete the attachment

@@ -16,14 +16,14 @@ describe("Golden Dataset Tests", () => {
     // Validate our golden dataset is well-formed
     const validation = validateGoldenDataset();
     if (!validation.valid) {
-      console.error("❌ Golden dataset validation failed:", validation.errors);
+      console.error("Golden dataset validation failed:", validation.errors);
       throw new Error(
         `Golden dataset is invalid: ${validation.errors.join(", ")}`,
       );
     }
-    console.log("✅ Golden dataset validated successfully");
+    console.log("Golden dataset validated successfully");
     const stats = getDatasetStats();
-    console.log("📊 Dataset stats:", JSON.stringify(stats, null, 2));
+    console.log("Dataset stats:", JSON.stringify(stats, null, 2));
   });
   describe("Perfect Matches", () => {
     const perfectMatches = GOLDEN_DATASET.filter(
@@ -31,7 +31,7 @@ describe("Golden Dataset Tests", () => {
     );
     for (const goldenCase of perfectMatches) {
       test(`should handle ${goldenCase.id} correctly`, () => {
-        console.log(`\n🎯 Testing: ${goldenCase.description}`);
+        console.log(`\nTesting: ${goldenCase.description}`);
         const { inbox, transaction, expectedScores } = goldenCase;
         // Test individual scoring components
         const amountScore = calculateAmountScore(inbox, transaction);
@@ -41,7 +41,7 @@ describe("Golden Dataset Tests", () => {
         );
         const dateScore = calculateDateScore(inbox.date, transaction.date);
         // Allow for small variations in scoring (±5%)
-        const tolerance = 0.05;
+        const _tolerance = 0.05;
         expect(amountScore).toBeCloseTo(expectedScores.amountScore, 1);
         expect(currencyScore).toBeCloseTo(expectedScores.currencyScore, 1);
         expect(dateScore).toBeCloseTo(expectedScores.dateScore, 1);
@@ -57,18 +57,17 @@ describe("Golden Dataset Tests", () => {
           expect(currencyScore).toBe(1.0); // Same currency = perfect score
         }
         console.log(
-          `📊 Actual scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
+          `Actual scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
         );
         console.log(
-          `📋 Expected scores: Amount=${expectedScores.amountScore.toFixed(3)}, Currency=${expectedScores.currencyScore.toFixed(3)}, Date=${expectedScores.dateScore.toFixed(3)}`,
+          `Expected scores: Amount=${expectedScores.amountScore.toFixed(3)}, Currency=${expectedScores.currencyScore.toFixed(3)}, Date=${expectedScores.dateScore.toFixed(3)}`,
         );
-        // Calculate overall confidence (simplified)
-        const mockEmbeddingScore = expectedScores.embeddingScore;
+        const mockNameScore = expectedScores.nameScore;
         const overallConfidence =
           amountScore * 0.3 +
           currencyScore * 0.2 +
           dateScore * 0.2 +
-          mockEmbeddingScore * 0.3;
+          mockNameScore * 0.3;
         expect(overallConfidence).toBeCloseTo(
           expectedScores.confidenceScore,
           1,
@@ -80,7 +79,7 @@ describe("Golden Dataset Tests", () => {
           expect(overallConfidence).toBeGreaterThan(0.7); // Above match threshold
         }
         console.log(
-          `✅ ${goldenCase.id}: Overall confidence ${overallConfidence.toFixed(3)} (expected ${expectedScores.confidenceScore.toFixed(3)})`,
+          `${goldenCase.id}: Overall confidence ${overallConfidence.toFixed(3)} (expected ${expectedScores.confidenceScore.toFixed(3)})`,
         );
       });
     }
@@ -91,7 +90,7 @@ describe("Golden Dataset Tests", () => {
     );
     for (const goldenCase of crossCurrencyMatches) {
       test(`should handle ${goldenCase.id} correctly`, () => {
-        console.log(`\n💱 Testing: ${goldenCase.description}`);
+        console.log(`\nTesting: ${goldenCase.description}`);
         const { inbox, transaction, expectedScores } = goldenCase;
         // Test cross-currency detection
         const isCrossMatch = isCrossCurrencyMatch(inbox, transaction);
@@ -110,14 +109,12 @@ describe("Golden Dataset Tests", () => {
           expect(amountScore).toBeGreaterThan(0.6); // Adjusted for actual cross-currency scoring
         }
         console.log(
-          `📊 Cross-currency scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
+          `Cross-currency scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
         );
         // Verify it matches expected behavior
         expect(amountScore).toBeCloseTo(expectedScores.amountScore, 1);
         expect(currencyScore).toBeCloseTo(expectedScores.currencyScore, 1);
-        console.log(
-          `✅ ${goldenCase.id}: Cross-currency match handled correctly`,
-        );
+        console.log(`${goldenCase.id}: Cross-currency match handled correctly`);
       });
     }
   });
@@ -137,15 +134,14 @@ describe("Golden Dataset Tests", () => {
         );
         const dateScore = calculateDateScore(inbox.date, transaction.date);
         console.log(
-          `📊 False positive scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
+          `False positive scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
         );
-        // Should have low overall confidence
-        const mockEmbeddingScore = expectedScores.embeddingScore;
+        const mockNameScore = expectedScores.nameScore;
         const overallConfidence =
           amountScore * 0.3 +
           currencyScore * 0.2 +
           dateScore * 0.2 +
-          mockEmbeddingScore * 0.3;
+          mockNameScore * 0.3;
         expect(overallConfidence).toBeLessThan(0.7); // Below adjusted match threshold
         expect(overallConfidence).toBeCloseTo(
           expectedScores.confidenceScore,
@@ -161,7 +157,7 @@ describe("Golden Dataset Tests", () => {
           expect(isCrossMatch).toBe(false);
         }
         console.log(
-          `✅ ${goldenCase.id}: False positive correctly prevented (confidence: ${overallConfidence.toFixed(3)})`,
+          `${goldenCase.id}: False positive correctly prevented (confidence: ${overallConfidence.toFixed(3)})`,
         );
       });
     }
@@ -174,7 +170,7 @@ describe("Golden Dataset Tests", () => {
     );
     for (const goldenCase of edgeCases) {
       test(`should handle edge case ${goldenCase.id}`, () => {
-        console.log(`\n⚠️  Testing: ${goldenCase.description}`);
+        console.log(`\nTesting: ${goldenCase.description}`);
         const { inbox, transaction, expectedScores } = goldenCase;
         const amountScore = calculateAmountScore(inbox, transaction);
         const currencyScore = calculateCurrencyScore(
@@ -183,7 +179,7 @@ describe("Golden Dataset Tests", () => {
         );
         const dateScore = calculateDateScore(inbox.date, transaction.date);
         console.log(
-          `📊 Edge case scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
+          `Edge case scores: Amount=${amountScore.toFixed(3)}, Currency=${currencyScore.toFixed(3)}, Date=${dateScore.toFixed(3)}`,
         );
         // Verify the specific weakness is detected
         if (goldenCase.matchType === "date_mismatch") {
@@ -198,7 +194,7 @@ describe("Golden Dataset Tests", () => {
         // Overall should match expected behavior
         expect(amountScore).toBeCloseTo(expectedScores.amountScore, 1);
         expect(dateScore).toBeCloseTo(expectedScores.dateScore, 1);
-        console.log(`✅ ${goldenCase.id}: Edge case handled correctly`);
+        console.log(`${goldenCase.id}: Edge case handled correctly`);
       });
     }
   });
@@ -219,7 +215,7 @@ describe("Golden Dataset Tests", () => {
       const avgDuration = duration / GOLDEN_DATASET.length;
       expect(avgDuration).toBeLessThan(1); // Should be <1ms per case
       console.log(
-        `⚡ Processed ${GOLDEN_DATASET.length} golden cases in ${duration.toFixed(2)}ms (${avgDuration.toFixed(3)}ms avg)`,
+        `Processed ${GOLDEN_DATASET.length} golden cases in ${duration.toFixed(2)}ms (${avgDuration.toFixed(3)}ms avg)`,
       );
     });
     test("should maintain consistent performance across categories", () => {
@@ -244,7 +240,7 @@ describe("Golden Dataset Tests", () => {
         const avgTime = times.reduce((a, b) => a + b, 0) / times.length;
         expect(avgTime).toBeLessThan(0.5); // Very fast
         console.log(
-          `📊 ${category}: ${avgTime.toFixed(4)}ms avg (${times.length} cases)`,
+          `${category}: ${avgTime.toFixed(4)}ms avg (${times.length} cases)`,
         );
       }
     });
@@ -262,13 +258,12 @@ describe("Golden Dataset Tests", () => {
           transaction.currency,
         );
         const dateScore = calculateDateScore(inbox.date, transaction.date);
-        const mockEmbeddingScore = expectedScores.embeddingScore;
+        const mockNameScore = expectedScores.nameScore;
         const actualConfidence =
           amountScore * 0.3 +
           currencyScore * 0.2 +
           dateScore * 0.2 +
-          mockEmbeddingScore * 0.3;
-        // Predict match/no-match based on threshold
+          mockNameScore * 0.3;
         const predictedMatch = actualConfidence > 0.6;
         const actualMatch = userFeedback === "confirmed";
         if (predictedMatch === actualMatch) {
@@ -280,12 +275,12 @@ describe("Golden Dataset Tests", () => {
       // Algorithm should maintain reasonable accuracy on golden dataset
       expect(accuracy).toBeGreaterThan(0.6); // 60% accuracy minimum (adjusted for more challenging cases)
       console.log(
-        `🎯 Algorithm accuracy: ${(accuracy * 100).toFixed(1)}% (${correctPredictions}/${totalPredictions})`,
+        `Algorithm accuracy: ${(accuracy * 100).toFixed(1)}% (${correctPredictions}/${totalPredictions})`,
       );
       // Log any failures for analysis
       if (accuracy < 0.9) {
         console.warn(
-          "⚠️  Algorithm accuracy below 90% - investigate potential regressions",
+          "Algorithm accuracy below 90% - investigate potential regressions",
         );
       }
     });
@@ -300,12 +295,12 @@ describe("Golden Dataset Tests", () => {
           transaction.currency,
         );
         const dateScore = calculateDateScore(inbox.date, transaction.date);
-        const mockEmbeddingScore = expectedScores.embeddingScore;
+        const mockNameScore = expectedScores.nameScore;
         const actualConfidence =
           amountScore * 0.3 +
           currencyScore * 0.2 +
           dateScore * 0.2 +
-          mockEmbeddingScore * 0.3;
+          mockNameScore * 0.3;
         if (userFeedback === "confirmed") {
           confirmedScores.push(actualConfidence);
         } else if (userFeedback === "declined") {
@@ -323,7 +318,7 @@ describe("Golden Dataset Tests", () => {
       // Declined matches should generally be below threshold
       expect(avgDeclined).toBeLessThan(0.7); // Adjusted for challenging edge cases with high semantic scores
       console.log(
-        `📊 Confidence separation: Confirmed avg=${avgConfirmed.toFixed(3)}, Declined avg=${avgDeclined.toFixed(3)}`,
+        `Confidence separation: Confirmed avg=${avgConfirmed.toFixed(3)}, Declined avg=${avgDeclined.toFixed(3)}`,
       );
     });
   });

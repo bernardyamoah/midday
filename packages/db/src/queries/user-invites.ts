@@ -1,6 +1,6 @@
-import type { Database } from "@db/client";
-import { teams, userInvites, users, usersOnTeam } from "@db/schema";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
+import type { Database } from "../client";
+import { teams, userInvites, users, usersOnTeam } from "../schema";
 
 export async function getUserInvites(db: Database, email: string) {
   return db.query.userInvites.findMany({
@@ -33,6 +33,7 @@ export async function getUserInvites(db: Database, email: string) {
 type AcceptTeamInviteParams = {
   id: string;
   userId: string;
+  userEmail: string;
 };
 
 export async function acceptTeamInvite(
@@ -45,11 +46,19 @@ export async function acceptTeamInvite(
       id: true,
       role: true,
       teamId: true,
+      email: true,
     },
   });
 
   if (!inviteData) {
     throw new Error("Invite not found");
+  }
+
+  const inviteEmail = inviteData.email?.trim().toLowerCase();
+  const userEmail = params.userEmail.trim().toLowerCase();
+
+  if (!inviteEmail || inviteEmail !== userEmail) {
+    throw new Error("Invite was sent to a different email address");
   }
 
   await db.insert(usersOnTeam).values({

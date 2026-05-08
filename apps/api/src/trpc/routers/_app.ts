@@ -1,26 +1,37 @@
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import { createTRPCRouter } from "../init";
+import { accountingRouter } from "./accounting";
 import { apiKeysRouter } from "./api-keys";
 import { appsRouter } from "./apps";
 import { bankAccountsRouter } from "./bank-accounts";
 import { bankConnectionsRouter } from "./bank-connections";
+import { bankingRouter } from "./banking";
 import { billingRouter } from "./billing";
+
+import { connectorsRouter } from "./connectors";
 import { customersRouter } from "./customers";
 import { documentTagAssignmentsRouter } from "./document-tag-assignments";
 import { documentTagsRouter } from "./document-tags";
 import { documentsRouter } from "./documents";
+
 import { inboxRouter } from "./inbox";
 import { inboxAccountsRouter } from "./inbox-accounts";
+
 import { institutionsRouter } from "./institutions";
 import { invoiceRouter } from "./invoice";
+import { invoicePaymentsRouter } from "./invoice-payments";
 import { invoiceProductsRouter } from "./invoice-products";
+import { invoiceRecurringRouter } from "./invoice-recurring";
 import { invoiceTemplateRouter } from "./invoice-template";
+import { jobsRouter } from "./jobs";
 import { notificationSettingsRouter } from "./notification-settings";
 import { notificationsRouter } from "./notifications";
 import { oauthApplicationsRouter } from "./oauth-applications";
+import { overviewRouter } from "./overview";
 import { reportsRouter } from "./reports";
 import { searchRouter } from "./search";
 import { shortLinksRouter } from "./short-links";
+
 import { tagsRouter } from "./tags";
 import { teamRouter } from "./team";
 import { trackerEntriesRouter } from "./tracker-entries";
@@ -32,24 +43,35 @@ import { transactionsRouter } from "./transactions";
 import { userRouter } from "./user";
 
 export const appRouter = createTRPCRouter({
+  accounting: accountingRouter,
+  banking: bankingRouter,
   notifications: notificationsRouter,
   notificationSettings: notificationSettingsRouter,
   apps: appsRouter,
   bankAccounts: bankAccountsRouter,
   bankConnections: bankConnectionsRouter,
+
+  connectors: connectorsRouter,
   customers: customersRouter,
   documents: documentsRouter,
   documentTagAssignments: documentTagAssignmentsRouter,
   documentTags: documentTagsRouter,
+
   inbox: inboxRouter,
   inboxAccounts: inboxAccountsRouter,
+
   institutions: institutionsRouter,
   invoice: invoiceRouter,
+  invoicePayments: invoicePaymentsRouter,
   invoiceProducts: invoiceProductsRouter,
+  invoiceRecurring: invoiceRecurringRouter,
   invoiceTemplate: invoiceTemplateRouter,
+  jobs: jobsRouter,
+  overview: overviewRouter,
   reports: reportsRouter,
   oauthApplications: oauthApplicationsRouter,
   billing: billingRouter,
+
   tags: tagsRouter,
   team: teamRouter,
   trackerEntries: trackerEntriesRouter,

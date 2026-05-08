@@ -1,7 +1,5 @@
 "use client";
 
-import { useTeamQuery } from "@/hooks/use-team";
-import { useI18n } from "@/locales/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { Card, CardContent, CardHeader, CardTitle } from "@midday/ui/card";
 import { Icons } from "@midday/ui/icons";
@@ -12,6 +10,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@midday/ui/tooltip";
+import { useTeamQuery } from "@/hooks/use-team";
+import { useI18n } from "@/locales/client";
 import { AnimatedNumber } from "./animated-number";
 import { FormatAmount } from "./format-amount";
 
@@ -22,17 +22,17 @@ type Props = {
 
 export function InvoiceSummarySkeleton() {
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle>
-          <Skeleton className="h-[30px] w-32" />
+    <Card className="hidden sm:block">
+      <CardHeader className="pb-2 flex flex-row items-center">
+        <CardTitle className="font-medium text-2xl font-serif">
+          <Skeleton className="h-[32px] w-32" />
         </CardTitle>
       </CardHeader>
 
-      <CardContent className="pb-[34px]">
+      <CardContent className="pb-5">
         <div className="flex flex-col gap-2">
-          <Skeleton className="h-5 w-16" />
-          <Skeleton className="h-4 w-24" />
+          <Skeleton className="h-[26px] w-16" />
+          <Skeleton className="h-[22px] w-24" />
         </div>
       </CardContent>
     </Card>
@@ -52,7 +52,7 @@ export function InvoiceSummary({ data, title }: Props) {
   return (
     <Card>
       <CardHeader className="pb-2 flex flex-row items-center">
-        <CardTitle className="font-mono font-medium text-2xl">
+        <CardTitle className="font-medium text-2xl font-serif">
           <AnimatedNumber
             key={data.currency}
             value={data.totalAmount}
@@ -83,7 +83,7 @@ export function InvoiceSummary({ data, title }: Props) {
                           <span className="font-medium">{item.currency}</span>
                           <span className="text-[#878787]">({item.count})</span>
                         </div>
-                        <div className="font-mono text-right">
+                        <div className="text-right">
                           <FormatAmount
                             amount={item.originalAmount}
                             currency={item.currency}
@@ -118,7 +118,7 @@ export function InvoiceSummary({ data, title }: Props) {
         )}
       </CardHeader>
 
-      <CardContent>
+      <CardContent className="pb-5">
         <div className="flex flex-col gap-2">
           <div>{title}</div>
           <div className="text-sm text-muted-foreground">

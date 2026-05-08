@@ -1,3 +1,4 @@
+import { verifyAccessToken } from "@api/utils/auth";
 import { expandScopes } from "@api/utils/scopes";
 import { isValidApiKeyFormat } from "@db/utils/api-keys";
 import { apiKeyCache } from "@midday/cache/api-key-cache";
@@ -31,14 +32,55 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
   const db = c.get("db");
 
+  // Handle Supabase JWT tokens (try to verify as JWT first)
+  const supabaseSession = await verifyAccessToken(token);
+  if (supabaseSession) {
+    // Get user from database to get team info
+    const user = await getUserById(db, supabaseSession.user.id);
+
+    if (!user) {
+      throw new HTTPException(401, { message: "User not found" });
+    }
+
+    const session = {
+      teamId: user.teamId,
+      user: {
+        id: user.id,
+        email: user.email,
+        full_name: user.fullName,
+      },
+    };
+
+    c.set("session", session);
+    c.set("teamId", session.teamId);
+    c.set("user", user);
+    c.set("scopes", expandScopes(["apis.all"]));
+
+    await next();
+    return;
+  }
+
   // Handle OAuth access tokens (start with mid_access_token_)
   if (token.startsWith("mid_access_token_")) {
     const tokenData = await validateAccessToken(db, token);
 
-    if (!tokenData || !tokenData.user) {
+    if (!tokenData?.user) {
       throw new HTTPException(401, {
         message: "Invalid or expired access token",
       });
+    }
+
+    let user = await userCache.get(tokenData.user.id);
+
+    if (!user) {
+      user = await getUserById(db, tokenData.user.id);
+      if (user) {
+        await userCache.set(tokenData.user.id, user);
+      }
+    }
+
+    if (!user) {
+      throw new HTTPException(401, { message: "User not found" });
     }
 
     const session = {
@@ -57,6 +99,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
     c.set("session", session);
     c.set("teamId", session.teamId);
+    c.set("user", user);
     c.set("scopes", expandScopes(tokenData.scopes ?? []));
 
     await next();
@@ -113,6 +156,7 @@ export const withAuth: MiddlewareHandler = async (c, next) => {
 
   c.set("session", session);
   c.set("teamId", session.teamId);
+  c.set("user", user);
   c.set("scopes", expandScopes(apiKey.scopes ?? []));
 
   // Update last used at

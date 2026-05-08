@@ -1,6 +1,6 @@
 import { getDb } from "@jobs/init";
 import { triggerMatchingNotification } from "@jobs/utils/inbox-matching-notifications";
-import { calculateInboxSuggestions } from "@midday/db/queries";
+import { calculateInboxSuggestions, hasSuggestion } from "@midday/db/queries";
 import { logger, schemaTask } from "@trigger.dev/sdk";
 import { z } from "zod";
 
@@ -26,7 +26,6 @@ export const batchProcessMatching = schemaTask({
     let noMatchCount = 0;
     let errorCount = 0;
 
-    // Process in smaller batches for better performance and error isolation
     const BATCH_SIZE = 5;
     for (let i = 0; i < inboxIds.length; i += BATCH_SIZE) {
       const batch = inboxIds.slice(i, i + BATCH_SIZE);
@@ -39,8 +38,7 @@ export const batchProcessMatching = schemaTask({
               inboxId,
             });
 
-            // Send notifications based on matching result
-            if (result.action !== "no_match_yet" && result.suggestion) {
+            if (hasSuggestion(result)) {
               await triggerMatchingNotification({
                 db,
                 teamId,
@@ -88,7 +86,6 @@ export const batchProcessMatching = schemaTask({
         }),
       );
 
-      // Log batch completion
       const batchErrors = results.filter((r) => r.status === "rejected").length;
       logger.info("Completed batch processing", {
         teamId,

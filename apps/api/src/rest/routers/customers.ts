@@ -8,13 +8,14 @@ import {
   upsertCustomerSchema,
 } from "@api/schemas/customers";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import {
   deleteCustomer,
   getCustomerById,
   getCustomers,
   upsertCustomer,
 } from "@midday/db/queries";
+import { HTTPException } from "hono/http-exception";
 
 const app = new OpenAPIHono<Context>();
 
@@ -68,6 +69,7 @@ app.openapi(
     tags: ["Customers"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: upsertCustomerSchema,
@@ -85,7 +87,7 @@ app.openapi(
         },
       },
     },
-    middleware: [withRequiredScope("customers.read")],
+    middleware: [withRequiredScope("customers.write")],
   }),
   async (c) => {
     const db = c.get("db");
@@ -97,7 +99,7 @@ app.openapi(
       teamId,
     });
 
-    return c.json(validateResponse(result, customerResponseSchema));
+    return c.json(validateResponse(result, customerResponseSchema), 201);
   },
 );
 
@@ -132,6 +134,10 @@ app.openapi(
 
     const result = await getCustomerById(db, { id, teamId });
 
+    if (!result) {
+      throw new HTTPException(404, { message: "Customer not found" });
+    }
+
     return c.json(validateResponse(result, customerResponseSchema));
   },
 );
@@ -148,6 +154,7 @@ app.openapi(
     request: {
       params: getCustomerByIdSchema,
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: upsertCustomerSchema,

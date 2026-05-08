@@ -9,27 +9,27 @@ body {
 
 .skeleton-box {
   background-color: hsl(var(--border));
-  color: hsl(var(--border)) !important;
-  user-select: none !important;
-  cursor: default !important;
+  color: hsl(var(--border));
+  user-select: none;
+  cursor: default;
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  border-color: transparent !important;
+  border-color: transparent;
 }
 
 .skeleton-circle {
   background-color: hsl(var(--border));
-  border-radius: 1000px !important;
-  color: hsl(var(--border)) !important;
-  user-select: none !important;
-  cursor: default !important;
+  border-radius: 1000px;
+  color: hsl(var(--border));
+  user-select: none;
+  cursor: default;
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-  border-color: transparent !important;
+  border-color: transparent;
 }
 
 .skeleton-circle > *,
 .skeleton-box > *,
 .skeleton-line > * {
-  opacity: 0 !important;
+  opacity: 0;
 }
 
 .pin-field-container {
@@ -94,10 +94,10 @@ body {
 
 /* Desktop App */
 html.desktop {
-  background: transparent !important;
+  background: transparent;
   user-select: none;
   -webkit-user-select: none;
-  overscroll-behavior: none !important;
+  overscroll-behavior: none;
   border-radius: 10px;
   overflow: hidden;
   height: 100vh;
@@ -111,8 +111,8 @@ html.desktop {
 
 html.desktop body {
   position: relative;
-  background: hsl(var(--background)) !important;
-  overscroll-behavior: none !important;
+  background: hsl(var(--background));
+  overscroll-behavior: none;
   margin: 0;
   padding: 0;
   box-sizing: border-box;
@@ -147,7 +147,7 @@ html.desktop body::-webkit-scrollbar {
 .desktop div,
 .desktop a,
 .desktop button {
-  cursor: default !important;
+  cursor: default;
 }
 
 .color-picker .react-colorful {
@@ -209,8 +209,8 @@ input[type="time"]::-webkit-calendar-picker-indicator {
 }
 
 .tiptap {
-  font-size: 11px !important;
-  line-height: 18px !important;
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .dark .dotted-bg {
@@ -252,4 +252,15 @@ input[type="time"]::-webkit-calendar-picker-indicator {
   border-right: 0px;
   border-bottom: 0px;
   border-top: 1px;
+}
+
+.hide-scrollbar,
+.hide-scrollbar * {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar,
+.hide-scrollbar *::-webkit-scrollbar {
+  display: none;
 }

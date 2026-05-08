@@ -26,7 +26,7 @@ async function getBankSchedulers(): Promise<SchedulerInfo[]> {
       perPage: 200,
     });
 
-    if (!schedulesPage || !schedulesPage.data) {
+    if (!schedulesPage?.data) {
       break;
     }
 
@@ -71,12 +71,12 @@ async function deleteBankSchedulers() {
     }
 
     console.log(
-      `⚠️  About to delete ${bankSchedulers.length} bank-sync-scheduler schedules:\n`,
+      `About to delete ${bankSchedulers.length} bank-sync-scheduler schedules:\n`,
     );
 
     // Display what will be deleted
     for (const [index, scheduler] of bankSchedulers.entries()) {
-      const status = scheduler.enabled ? "🟢 Enabled" : "🔴 Disabled";
+      const status = scheduler.enabled ? "Enabled" : "Disabled";
       console.log(`${index + 1}. ID: ${scheduler.id}`);
       console.log(`   Status: ${status}`);
       console.log(`   External ID: ${scheduler.externalId || "N/A"}`);
@@ -85,7 +85,7 @@ async function deleteBankSchedulers() {
     }
 
     // Ask for confirmation
-    console.log("🚨 This action cannot be undone!");
+    console.log("This action cannot be undone!");
     console.log("Are you sure you want to delete all these schedulers? (y/N)");
 
     // Wait for user input
@@ -101,11 +101,11 @@ async function deleteBankSchedulers() {
     });
 
     if (response !== "y") {
-      console.log("❌ Deletion cancelled.");
+      console.log("Deletion cancelled.");
       return;
     }
 
-    console.log("\n🗑️  Starting deletion process...\n");
+    console.log("\nStarting deletion process...\n");
 
     // Delete each scheduler
     const results = {
@@ -124,22 +124,22 @@ async function deleteBankSchedulers() {
       try {
         await schedules.del(scheduler.id);
         results.deleted.push(scheduler.id);
-        console.log("  ✅ Successfully deleted");
+        console.log("  Successfully deleted");
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
         results.failed.push({ id: scheduler.id, error: errorMessage });
-        console.log(`  ❌ Failed: ${errorMessage}`);
+        console.log(`  Failed: ${errorMessage}`);
       }
     }
 
     // Summary
-    console.log("\n📊 Deletion Summary:");
-    console.log(`✅ Successfully deleted: ${results.deleted.length}`);
-    console.log(`❌ Failed to delete: ${results.failed.length}`);
+    console.log("\nDeletion Summary:");
+    console.log(`Successfully deleted: ${results.deleted.length}`);
+    console.log(`Failed to delete: ${results.failed.length}`);
 
     if (results.failed.length > 0) {
-      console.log("\n❌ Failed deletions:");
+      console.log("\nFailed deletions:");
       for (const { id, error } of results.failed) {
         console.log(`  - ${id}: ${error}`);
       }
@@ -154,7 +154,7 @@ async function deleteBankSchedulers() {
 async function main() {
   try {
     await deleteBankSchedulers();
-    console.log("\n🎉 Script completed successfully.");
+    console.log("\nScript completed successfully.");
     process.exit(0);
   } catch (error) {
     console.error("Script failed:", error);
@@ -167,5 +167,5 @@ if (require.main === module) {
   main();
 }
 
-export { deleteBankSchedulers, getBankSchedulers };
 export type { SchedulerInfo };
+export { deleteBankSchedulers, getBankSchedulers };

@@ -1,3 +1,5 @@
+"use client";
+
 import { ScrollArea } from "@midday/ui/scroll-area";
 import type { Invoice } from "../../types";
 import { EditorContent } from "./components/editor-content";
@@ -48,28 +50,32 @@ export function HtmlTemplate({ data, width, height }: Props) {
         className="p-4 sm:p-6 md:p-8 h-full flex flex-col"
         style={{ minHeight: height - 5 }}
       >
-        <div className="flex justify-between">
-          <Meta
-            template={template}
-            invoiceNumber={invoiceNumber}
-            issueDate={issueDate}
-            dueDate={dueDate}
-          />
+        <div className="flex justify-between items-start">
+          <div className="flex-1 min-w-0 mr-5">
+            <Meta
+              template={template}
+              invoiceNumber={invoiceNumber}
+              issueDate={issueDate}
+              dueDate={dueDate}
+            />
+          </div>
 
           {template.logoUrl && (
-            <Logo logo={template.logoUrl} customerName={customerName || ""} />
+            <div className="flex-shrink-0">
+              <Logo logo={template.logoUrl} customerName={customerName || ""} />
+            </div>
           )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 mt-6 mb-4">
           <div>
-            <p className="text-[11px] text-[#878787] font-mono mb-2 block">
+            <p className="text-[11px] text-[#878787] mb-2 block">
               {template.fromLabel}
             </p>
             <EditorContent content={fromDetails} />
           </div>
           <div className="mt-4 md:mt-0">
-            <p className="text-[11px] text-[#878787] font-mono mb-2 block">
+            <p className="text-[11px] text-[#878787] mb-2 block">
               {template.customerLabel}
             </p>
             <EditorContent content={customerDetails} />
@@ -88,12 +94,15 @@ export function HtmlTemplate({ data, width, height }: Props) {
           includeDecimals={template.includeDecimals}
           locale={template.locale}
           includeUnits={template.includeUnits}
+          includeLineItemTax={template.includeLineItemTax}
+          lineItemTaxLabel={template.lineItemTaxLabel}
         />
 
         <div className="mt-10 md:mt-12 flex justify-end mb-6 md:mb-8">
           <Summary
             includeVat={template.includeVat}
             includeTax={template.includeTax}
+            includeLineItemTax={template.includeLineItemTax}
             taxRate={template.taxRate}
             vatRate={template.vatRate}
             currency={currency}
@@ -113,14 +122,14 @@ export function HtmlTemplate({ data, width, height }: Props) {
         <div className="flex flex-col space-y-6 md:space-y-8 mt-auto">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
             <div>
-              <p className="text-[11px] text-[#878787] font-mono mb-2 block">
+              <p className="text-[11px] text-[#878787] mb-2 block">
                 {template.paymentLabel}
               </p>
               <EditorContent content={paymentDetails} />
             </div>
             {noteDetails && (
               <div className="mt-4 md:mt-0">
-                <p className="text-[11px] text-[#878787] font-mono mb-2 block">
+                <p className="text-[11px] text-[#878787] mb-2 block">
                   {template.noteLabel}
                 </p>
                 <EditorContent content={noteDetails} />

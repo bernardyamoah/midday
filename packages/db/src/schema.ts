@@ -1,4 +1,4 @@
-import { type SQL, relations, sql } from "drizzle-orm";
+import { relations, type SQL, sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
@@ -9,9 +9,7 @@ import {
   integer,
   json,
   jsonb,
-  numeric,
   pgEnum,
-  pgMaterializedView,
   pgPolicy,
   pgTable,
   primaryKey,
@@ -24,6 +22,7 @@ import {
   varchar,
   vector,
 } from "drizzle-orm/pg-core";
+import type { AnyAppConfig } from "./app-config";
 
 export const tsvector = customType<{
   data: string;
@@ -74,6 +73,11 @@ export const connectionStatusEnum = pgEnum("connection_status", [
   "unknown",
 ]);
 
+export const institutionStatusEnum = pgEnum("institution_status", [
+  "active",
+  "removed",
+]);
+
 export const documentProcessingStatusEnum = pgEnum(
   "document_processing_status",
   ["pending", "processing", "completed", "failed"],
@@ -89,6 +93,24 @@ export const inboxAccountStatusEnum = pgEnum("inbox_account_status", [
   "disconnected",
 ]);
 
+export const accountingProviderEnum = pgEnum("accounting_provider", [
+  "xero",
+  "quickbooks",
+  "fortnox",
+]);
+
+export const accountingSyncStatusEnum = pgEnum("accounting_sync_status", [
+  "synced",
+  "failed",
+  "pending",
+  "partial",
+]);
+
+export const accountingSyncTypeEnum = pgEnum("accounting_sync_type", [
+  "auto",
+  "manual",
+]);
+
 export const inboxStatusEnum = pgEnum("inbox_status", [
   "processing",
   "pending",
@@ -99,9 +121,18 @@ export const inboxStatusEnum = pgEnum("inbox_status", [
   "no_match",
   "done",
   "deleted",
+  "other",
 ]);
 
-export const inboxTypeEnum = pgEnum("inbox_type", ["invoice", "expense"]);
+export const inboxTypeEnum = pgEnum("inbox_type", [
+  "invoice",
+  "expense",
+  "other",
+]);
+export const inboxBlocklistTypeEnum = pgEnum("inbox_blocklist_type", [
+  "email",
+  "domain",
+]);
 export const invoiceDeliveryTypeEnum = pgEnum("invoice_delivery_type", [
   "create",
   "create_and_send",
@@ -116,23 +147,51 @@ export const invoiceStatusEnum = pgEnum("invoice_status", [
   "unpaid",
   "canceled",
   "scheduled",
+  "refunded",
+]);
+
+export const invoiceRecurringFrequencyEnum = pgEnum(
+  "invoice_recurring_frequency",
+  [
+    "weekly",
+    "biweekly", // Every 2 weeks on the same weekday
+    "monthly_date", // Monthly on specific date (e.g., 15th)
+    "monthly_weekday", // Monthly on nth weekday (e.g., 1st Friday)
+    "monthly_last_day", // Monthly on the last day of the month
+    "quarterly", // Every 3 months
+    "semi_annual", // Every 6 months
+    "annual", // Every 12 months
+    "custom", // Every X days
+  ],
+);
+
+export const invoiceRecurringEndTypeEnum = pgEnum(
+  "invoice_recurring_end_type",
+  ["never", "on_date", "after_count"],
+);
+
+export const invoiceRecurringStatusEnum = pgEnum("invoice_recurring_status", [
+  "active",
+  "paused",
+  "completed",
+  "canceled",
 ]);
 
 export const plansEnum = pgEnum("plans", ["trial", "starter", "pro"]);
 export const subscriptionStatusEnum = pgEnum("subscription_status", [
   "active",
-  "canceled",
   "past_due",
-  "unpaid",
   "trialing",
-  "incomplete",
-  "incomplete_expired",
 ]);
 export const reportTypesEnum = pgEnum("reportTypes", [
   "profit",
   "revenue",
   "burn_rate",
   "expense",
+  "monthly_revenue",
+  "revenue_forecast",
+  "runway",
+  "category_expenses",
 ]);
 
 export const teamRolesEnum = pgEnum("teamRoles", ["owner", "member"]);
@@ -161,6 +220,7 @@ export const transactionStatusEnum = pgEnum("transactionStatus", [
   "excluded",
   "completed",
   "archived",
+  "exported",
 ]);
 
 export const transactionFrequencyEnum = pgEnum("transaction_frequency", [
@@ -185,6 +245,13 @@ export const activityTypeEnum = pgEnum("activity_type", [
   "invoice_overdue",
   "invoice_sent",
   "inbox_match_confirmed",
+  "invoice_refunded",
+
+  // Recurring invoice activities
+  "recurring_series_started",
+  "recurring_series_completed",
+  "recurring_series_paused",
+  "recurring_invoice_upcoming",
 
   // User actions
   "document_uploaded",
@@ -203,6 +270,7 @@ export const activityTypeEnum = pgEnum("activity_type", [
   "transaction_category_created",
   "transactions_exported",
   "customer_created",
+  "insight_ready",
 ]);
 
 export const activitySourceEnum = pgEnum("activity_source", [
@@ -216,6 +284,27 @@ export const activityStatusEnum = pgEnum("activity_status", [
   "archived",
 ]);
 
+export const insightPeriodTypeEnum = pgEnum("insight_period_type", [
+  "weekly",
+  "monthly",
+  "quarterly",
+  "yearly",
+]);
+
+export const insightStatusEnum = pgEnum("insight_status", [
+  "pending",
+  "generating",
+  "completed",
+  "failed",
+]);
+
+export const platformProviderEnum = pgEnum("platform_provider", [
+  "slack",
+  "telegram",
+  "whatsapp",
+  "sendblue",
+]);
+
 export const documentTagEmbeddings = pgTable(
   "document_tag_embeddings",
   {
@@ -225,9 +314,6 @@ export const documentTagEmbeddings = pgTable(
     model: text().notNull().default("gemini-embedding-001"),
   },
   (table) => [
-    index("document_tag_embeddings_idx")
-      .using("hnsw", table.embedding.asc().nullsLast().op("vector_cosine_ops"))
-      .with({ m: "16", ef_construction: "64" }),
     pgPolicy("Enable insert for authenticated users only", {
       as: "permissive",
       for: "insert",
@@ -252,11 +338,6 @@ export const transactionCategoryEmbeddings = pgTable(
       .notNull(),
   },
   (table) => [
-    // Vector similarity index for fast cosine similarity search
-    index("transaction_category_embeddings_vector_idx")
-      .using("hnsw", table.embedding.asc().nullsLast().op("vector_cosine_ops"))
-      .with({ m: "16", ef_construction: "64" }),
-    // System categories index for filtering
     index("transaction_category_embeddings_system_idx").using(
       "btree",
       table.system.asc().nullsLast().op("bool_ops"),
@@ -350,9 +431,9 @@ export const transactions = pgTable(
       "btree",
       table.name.asc().nullsLast().op("text_ops"),
     ),
-    index("idx_transactions_name_trigram").using(
+    index("idx_transactions_merchant_name_trgm").using(
       "gin",
-      table.name.asc().nullsLast().op("gin_trgm_ops"),
+      table.merchantName.asc().nullsLast().op("gin_trgm_ops"),
     ),
     index("idx_transactions_team_id_date_name").using(
       "btree",
@@ -394,6 +475,14 @@ export const transactions = pgTable(
       "btree",
       table.teamId.asc().nullsLast().op("uuid_ops"),
     ),
+    index("idx_transactions_reports")
+      .using(
+        "btree",
+        table.teamId.asc().nullsLast().op("uuid_ops"),
+        table.date.asc().nullsLast().op("date_ops"),
+        table.categorySlug.asc().nullsLast().op("text_ops"),
+      )
+      .where(sql`internal = false AND status != 'excluded'`),
     foreignKey({
       columns: [table.assignedId],
       foreignColumns: [users.id],
@@ -467,6 +556,8 @@ export const trackerEntries = pgTable(
       "btree",
       table.teamId.asc().nullsLast().op("uuid_ops"),
     ),
+    // Composite index for insights activity date range queries
+    index("tracker_entries_team_date_idx").on(table.teamId, table.date),
     foreignKey({
       columns: [table.assignedId],
       foreignColumns: [users.id],
@@ -617,6 +708,18 @@ export const bankAccounts = pgTable(
     errorDetails: text("error_details"),
     errorRetries: smallint("error_retries"),
     accountReference: text("account_reference"),
+    // Additional account data for reconnect matching and user display
+    iban: text(), // IBAN (EU/UK) - encrypted at rest
+    subtype: text(), // Granular type: checking, savings, credit_card, money_market, etc.
+    bic: text(), // Bank Identifier Code / SWIFT
+    // US bank account details (Teller, Plaid)
+    routingNumber: text("routing_number"), // ACH routing number
+    wireRoutingNumber: text("wire_routing_number"), // Wire routing number
+    accountNumber: text("account_number"), // Full account number - encrypted at rest
+    sortCode: text("sort_code"), // UK BACS sort code
+    // Credit account balances
+    availableBalance: numericCasted({ precision: 10, scale: 2 }), // Available credit (cards) or available funds
+    creditLimit: numericCasted({ precision: 10, scale: 2 }), // Credit limit (cards only)
   },
   (table) => [
     index("bank_accounts_bank_connection_id_idx").using(
@@ -666,6 +769,114 @@ export const bankAccounts = pgTable(
       as: "permissive",
       for: "update",
       to: ["public"],
+    }),
+  ],
+);
+
+export const invoiceRecurring = pgTable(
+  "invoice_recurring",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "string",
+    }).defaultNow(),
+    teamId: uuid("team_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    customerId: uuid("customer_id"),
+    // Frequency settings
+    frequency: invoiceRecurringFrequencyEnum().notNull(),
+    frequencyDay: integer("frequency_day"), // 0-6 for weekly (day of week), 1-31 for monthly_date
+    frequencyWeek: integer("frequency_week"), // 1-5 for monthly_weekday (e.g., 1st, 2nd Friday)
+    frequencyInterval: integer("frequency_interval"), // For custom: every X days
+    // End conditions
+    endType: invoiceRecurringEndTypeEnum("end_type").notNull(),
+    endDate: timestamp("end_date", { withTimezone: true, mode: "string" }),
+    endCount: integer("end_count"),
+    // Status tracking
+    status: invoiceRecurringStatusEnum().default("active").notNull(),
+    invoicesGenerated: integer("invoices_generated").default(0).notNull(),
+    consecutiveFailures: integer("consecutive_failures").default(0).notNull(), // Track failures for auto-pause
+    nextScheduledAt: timestamp("next_scheduled_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    lastGeneratedAt: timestamp("last_generated_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    timezone: text().notNull(), // User's timezone for correct day-of-week calculation
+    // Invoice template data
+    dueDateOffset: integer("due_date_offset").default(30).notNull(), // Days from issue date to due date
+    amount: numericCasted({ precision: 10, scale: 2 }),
+    currency: text(),
+    lineItems: jsonb("line_items"),
+    template: jsonb(), // Invoice template snapshot (labels, settings, etc.)
+    paymentDetails: jsonb("payment_details"),
+    fromDetails: jsonb("from_details"),
+    noteDetails: jsonb("note_details"),
+    customerName: text("customer_name"),
+    vat: numericCasted({ precision: 10, scale: 2 }),
+    tax: numericCasted({ precision: 10, scale: 2 }),
+    discount: numericCasted({ precision: 10, scale: 2 }),
+    subtotal: numericCasted({ precision: 10, scale: 2 }),
+    topBlock: jsonb("top_block"),
+    bottomBlock: jsonb("bottom_block"),
+    templateId: uuid("template_id"),
+    // Notification tracking
+    upcomingNotificationSentAt: timestamp("upcoming_notification_sent_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+  },
+  (table) => [
+    index("invoice_recurring_team_id_idx").using(
+      "btree",
+      table.teamId.asc().nullsLast().op("uuid_ops"),
+    ),
+    index("invoice_recurring_next_scheduled_at_idx").using(
+      "btree",
+      table.nextScheduledAt.asc().nullsLast().op("timestamptz_ops"),
+    ),
+    index("invoice_recurring_status_idx").using(
+      "btree",
+      table.status.asc().nullsLast(),
+    ),
+    // Compound partial index for scheduler query
+    index("invoice_recurring_active_scheduled_idx")
+      .using(
+        "btree",
+        table.nextScheduledAt.asc().nullsLast().op("timestamptz_ops"),
+      )
+      .where(sql`status = 'active'`),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+      name: "invoice_recurring_team_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "invoice_recurring_user_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.customerId],
+      foreignColumns: [customers.id],
+      name: "invoice_recurring_customer_id_fkey",
+    }).onDelete("set null"),
+    foreignKey({
+      columns: [table.templateId],
+      foreignColumns: [invoiceTemplates.id],
+      name: "invoice_recurring_template_id_fkey",
+    }).onDelete("set null"),
+    pgPolicy("Invoice recurring can be handled by a member of the team", {
+      as: "permissive",
+      for: "all",
+      to: ["public"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
     }),
   ],
 );
@@ -735,6 +946,15 @@ export const invoices = pgTable(
       mode: "string",
     }),
     scheduledJobId: text("scheduled_job_id"),
+    templateId: uuid("template_id"),
+    paymentIntentId: text("payment_intent_id"),
+    refundedAt: timestamp("refunded_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    // Recurring invoice fields
+    invoiceRecurringId: uuid("invoice_recurring_id"),
+    recurringSequence: integer("recurring_sequence"), // Which number in the series (1, 2, 3...)
   },
   (table) => [
     index("invoices_created_at_idx").using(
@@ -748,6 +968,17 @@ export const invoices = pgTable(
     index("invoices_team_id_idx").using(
       "btree",
       table.teamId.asc().nullsLast().op("uuid_ops"),
+    ),
+    index("invoices_template_id_idx").using(
+      "btree",
+      table.templateId.asc().nullsLast().op("uuid_ops"),
+    ),
+    // Composite indexes for insights activity queries
+    index("invoices_team_sent_at_idx").on(table.teamId, table.sentAt),
+    index("invoices_team_status_paid_at_idx").on(
+      table.teamId,
+      table.status,
+      table.paidAt,
     ),
     foreignKey({
       columns: [table.userId],
@@ -764,7 +995,41 @@ export const invoices = pgTable(
       foreignColumns: [teams.id],
       name: "invoices_team_id_fkey",
     }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.templateId],
+      foreignColumns: [invoiceTemplates.id],
+      name: "invoices_template_id_fkey",
+    }).onDelete("set null"),
+    foreignKey({
+      columns: [table.invoiceRecurringId],
+      foreignColumns: [invoiceRecurring.id],
+      name: "invoices_invoice_recurring_id_fkey",
+    }).onDelete("set null"),
+    index("invoices_invoice_recurring_id_idx").using(
+      "btree",
+      table.invoiceRecurringId.asc().nullsLast().op("uuid_ops"),
+    ),
+    // Unique constraint for idempotency (prevents duplicate invoices for same sequence)
+    uniqueIndex("invoices_recurring_sequence_unique_idx")
+      .on(table.invoiceRecurringId, table.recurringSequence)
+      .where(sql`invoice_recurring_id IS NOT NULL`),
     unique("invoices_scheduled_job_id_key").on(table.scheduledJobId),
+    // Invoice page query indexes
+    index("invoices_team_due_date_idx")
+      .on(table.teamId, table.dueDate.desc())
+      .where(sql`due_date IS NOT NULL`),
+    index("invoices_team_status_due_date_idx").on(
+      table.teamId,
+      table.status,
+      table.dueDate.desc(),
+    ),
+    index("invoices_team_customer_id_idx")
+      .on(table.teamId, table.customerId)
+      .where(sql`customer_id IS NOT NULL`),
+    index("invoices_customer_id_idx")
+      .on(table.customerId)
+      .where(sql`customer_id IS NOT NULL`),
+    index("invoices_team_created_at_idx").on(table.teamId, table.createdAt),
     pgPolicy("Invoices can be handled by a member of the team", {
       as: "permissive",
       for: "all",
@@ -798,6 +1063,48 @@ export const customers = pgTable(
     countryCode: text("country_code"),
     token: text().default("").notNull(),
     contact: text(),
+
+    // Customer relationship fields
+    status: text().default("active"), // active, inactive, prospect, churned
+    preferredCurrency: text("preferred_currency"),
+    defaultPaymentTerms: integer("default_payment_terms"), // days (30, 60, etc.)
+    isArchived: boolean("is_archived").default(false),
+    source: text().default("manual"), // manual, import, quickbooks, xero, etc.
+    externalId: text("external_id"), // for external system sync
+
+    // Enrichment fields (from Gemini + Google Search grounding)
+    logoUrl: text("logo_url"),
+    description: text(), // AI-generated company description
+    industry: text(), // Software, Healthcare, Finance, etc.
+    companyType: text("company_type"), // B2B, B2C, SaaS, Agency, etc.
+    employeeCount: text("employee_count"), // 1-10, 11-50, 51-200, etc.
+    foundedYear: integer("founded_year"),
+    estimatedRevenue: text("estimated_revenue"), // <$1M, $1-10M, etc.
+    fundingStage: text("funding_stage"), // Bootstrapped, Seed, Series A, etc.
+    totalFunding: text("total_funding"), // e.g., "$25M"
+    headquartersLocation: text("headquarters_location"), // City, Country
+    timezone: text(), // IANA timezone
+    linkedinUrl: text("linkedin_url"),
+    twitterUrl: text("twitter_url"),
+    instagramUrl: text("instagram_url"),
+    facebookUrl: text("facebook_url"),
+    ceoName: text("ceo_name"), // CEO or founder name
+    financeContact: text("finance_contact"), // Finance/AP contact name for invoicing
+    financeContactEmail: text("finance_contact_email"), // Finance/AP contact email
+    primaryLanguage: text("primary_language"), // Primary business language (e.g., "en", "sv", "de")
+    fiscalYearEnd: text("fiscal_year_end"), // Fiscal year end month (e.g., "December", "March")
+
+    // Enrichment metadata
+    enrichmentStatus: text("enrichment_status"), // null = not attempted, pending, processing, completed, failed
+    enrichedAt: timestamp("enriched_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+
+    // Portal fields
+    portalEnabled: boolean("portal_enabled").default(false),
+    portalId: text("portal_id"),
+
     fts: tsvector("fts")
       .notNull()
       .generatedAlwaysAs(
@@ -823,6 +1130,14 @@ export const customers = pgTable(
       "gin",
       table.fts.asc().nullsLast().op("tsvector_ops"),
     ),
+    index("idx_customers_status").on(table.status),
+    index("idx_customers_is_archived").on(table.isArchived),
+    index("idx_customers_enrichment_status").on(table.enrichmentStatus),
+    index("idx_customers_website").on(table.website),
+    index("idx_customers_industry").on(table.industry),
+    // Team and date indexes for insights activity queries
+    index("customers_team_id_idx").on(table.teamId),
+    index("customers_team_created_at_idx").on(table.teamId, table.createdAt),
     foreignKey({
       columns: [table.teamId],
       foreignColumns: [teams.id],
@@ -1045,6 +1360,36 @@ export const reports = pgTable(
       for: "update",
       to: ["public"],
     }),
+  ],
+);
+
+export const institutions = pgTable(
+  "institutions",
+  {
+    id: text().primaryKey().notNull(),
+    name: text().notNull(),
+    logo: text(),
+    provider: bankProvidersEnum().notNull(),
+    countries: text().array().notNull(),
+    availableHistory: integer("available_history"),
+    maximumConsentValidity: integer("maximum_consent_validity"),
+    popularity: integer().default(0).notNull(),
+    type: text(),
+    status: institutionStatusEnum().default("active").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("institutions_country_idx").using("gin", table.countries),
+    index("institutions_name_trgm_idx").using(
+      "gin",
+      sql`${table.name} gin_trgm_ops`,
+    ),
+    index("institutions_status_idx").on(table.status),
   ],
 );
 
@@ -1321,6 +1666,7 @@ export const teams = pgTable(
     inboxForwarding: boolean("inbox_forwarding").default(true),
     baseCurrency: text("base_currency"),
     countryCode: text("country_code"),
+    fiscalYearStartMonth: smallint("fiscal_year_start_month"),
     documentClassification: boolean("document_classification").default(false),
     flags: text().array(),
     canceledAt: timestamp("canceled_at", {
@@ -1328,8 +1674,12 @@ export const teams = pgTable(
       mode: "string",
     }),
     plan: plansEnum().default("trial").notNull(),
-    // subscriptionStatus: subscriptionStatusEnum("subscription_status"),
+    subscriptionStatus: subscriptionStatusEnum("subscription_status"),
     exportSettings: jsonb("export_settings"),
+    stripeAccountId: text("stripe_account_id"),
+    stripeConnectStatus: text("stripe_connect_status"),
+    companyType: text("company_type"),
+    heardAbout: text("heard_about"),
   },
   (table) => [
     unique("teams_inbox_id_key").on(table.inboxId),
@@ -1410,6 +1760,27 @@ export const documents = pgTable(
       table.teamId.asc().nullsLast().op("text_ops"),
       table.parentId.asc().nullsLast().op("text_ops"),
     ),
+    // Composite index for common query pattern: teamId + createdAt DESC
+    // Used by getDocuments and getRecentDocuments
+    index("documents_team_id_created_at_idx").using(
+      "btree",
+      table.teamId.asc().nullsLast().op("uuid_ops"),
+      table.createdAt.desc().nullsLast(),
+    ),
+    // Composite index for date range queries
+    // Used by getDocuments when filtering by date range
+    index("documents_team_id_date_idx").using(
+      "btree",
+      table.teamId.asc().nullsLast().op("uuid_ops"),
+      table.date.asc().nullsLast(),
+    ),
+    // Composite index for teamId + name queries
+    // Used by getDocumentById, updateDocumentByFileName, updateDocuments
+    index("documents_team_id_name_idx").using(
+      "btree",
+      table.teamId.asc().nullsLast().op("uuid_ops"),
+      table.name.asc().nullsLast().op("text_ops"),
+    ),
     index("idx_documents_fts_english").using(
       "gin",
       table.ftsEnglish.asc().nullsLast().op("tsvector_ops"),
@@ -1469,7 +1840,7 @@ export const apps = pgTable(
   {
     id: uuid().defaultRandom().primaryKey().notNull(),
     teamId: uuid("team_id").defaultRandom(),
-    config: jsonb(),
+    config: jsonb().$type<AnyAppConfig>(),
     createdAt: timestamp("created_at", {
       withTimezone: true,
       mode: "string",
@@ -1514,6 +1885,233 @@ export const apps = pgTable(
   ],
 );
 
+export const platformIdentities = pgTable(
+  "platform_identities",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    provider: platformProviderEnum().notNull(),
+    teamId: uuid("team_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    externalUserId: text("external_user_id").notNull(),
+    externalTeamId: text("external_team_id").default("").notNull(),
+    externalChannelId: text("external_channel_id"),
+    metadata: jsonb(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "string",
+    }).defaultNow(),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "string",
+    }).defaultNow(),
+  },
+  (table) => [
+    index("platform_identities_provider_external_idx").on(
+      table.provider,
+      table.externalTeamId,
+      table.externalUserId,
+    ),
+    index("platform_identities_team_id_idx").on(table.teamId),
+    index("platform_identities_user_id_idx").on(table.userId),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+      name: "platform_identities_team_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "platform_identities_user_id_fkey",
+    }).onDelete("cascade"),
+    unique("platform_identities_provider_external_unique").on(
+      table.provider,
+      table.externalTeamId,
+      table.externalUserId,
+    ),
+    pgPolicy("Platform identities can be created by a member of the team", {
+      as: "permissive",
+      for: "insert",
+      to: ["authenticated"],
+      withCheck: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Platform identities can be selected by a member of the team", {
+      as: "permissive",
+      for: "select",
+      to: ["authenticated"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Platform identities can be updated by a member of the team", {
+      as: "permissive",
+      for: "update",
+      to: ["authenticated"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Platform identities can be deleted by a member of the team", {
+      as: "permissive",
+      for: "delete",
+      to: ["authenticated"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+  ],
+);
+
+export const platformLinkTokens = pgTable(
+  "platform_link_tokens",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    code: text().notNull(),
+    provider: platformProviderEnum().notNull(),
+    teamId: uuid("team_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    expiresAt: timestamp("expires_at", {
+      withTimezone: true,
+      mode: "string",
+    }).notNull(),
+    usedAt: timestamp("used_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    metadata: jsonb(),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "string",
+    }).defaultNow(),
+  },
+  (table) => [
+    index("platform_link_tokens_code_idx").on(table.code),
+    index("platform_link_tokens_team_id_idx").on(table.teamId),
+    index("platform_link_tokens_user_id_idx").on(table.userId),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+      name: "platform_link_tokens_team_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "platform_link_tokens_user_id_fkey",
+    }).onDelete("cascade"),
+    unique("platform_link_tokens_code_unique").on(table.code),
+    pgPolicy("Platform link tokens can be created by a member of the team", {
+      as: "permissive",
+      for: "insert",
+      to: ["authenticated"],
+      withCheck: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Platform link tokens can be selected by a member of the team", {
+      as: "permissive",
+      for: "select",
+      to: ["authenticated"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Platform link tokens can be updated by a member of the team", {
+      as: "permissive",
+      for: "update",
+      to: ["authenticated"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Platform link tokens can be deleted by a member of the team", {
+      as: "permissive",
+      for: "delete",
+      to: ["authenticated"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+  ],
+);
+
+export const providerNotificationBatches = pgTable(
+  "provider_notification_batches",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    batchKey: text("batch_key").notNull(),
+    platformIdentityId: uuid("platform_identity_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    userId: uuid("user_id").notNull(),
+    provider: platformProviderEnum().notNull(),
+    eventFamily: text("event_family").notNull(),
+    payload: jsonb().notNull(),
+    notificationContext: jsonb("notification_context"),
+    windowEndsAt: timestamp("window_ends_at", {
+      withTimezone: true,
+      mode: "string",
+    }).notNull(),
+    sentAt: timestamp("sent_at", {
+      withTimezone: true,
+      mode: "string",
+    }),
+    createdAt: timestamp("created_at", {
+      withTimezone: true,
+      mode: "string",
+    }).defaultNow(),
+    updatedAt: timestamp("updated_at", {
+      withTimezone: true,
+      mode: "string",
+    }).defaultNow(),
+  },
+  (table) => [
+    index("provider_notification_batches_due_idx").on(
+      table.sentAt,
+      table.windowEndsAt,
+    ),
+    index("provider_notification_batches_identity_idx").on(
+      table.platformIdentityId,
+    ),
+    index("provider_notification_batches_team_id_idx").on(table.teamId),
+    foreignKey({
+      columns: [table.platformIdentityId],
+      foreignColumns: [platformIdentities.id],
+      name: "provider_notification_batches_identity_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+      name: "provider_notification_batches_team_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.userId],
+      foreignColumns: [users.id],
+      name: "provider_notification_batches_user_id_fkey",
+    }).onDelete("cascade"),
+    unique("provider_notification_batches_batch_key_unique").on(table.batchKey),
+    pgPolicy(
+      "Provider notification batches can be created by a member of the team",
+      {
+        as: "permissive",
+        for: "insert",
+        to: ["authenticated"],
+        withCheck: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+      },
+    ),
+    pgPolicy(
+      "Provider notification batches can be selected by a member of the team",
+      {
+        as: "permissive",
+        for: "select",
+        to: ["authenticated"],
+        using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+      },
+    ),
+    pgPolicy(
+      "Provider notification batches can be updated by a member of the team",
+      {
+        as: "permissive",
+        for: "update",
+        to: ["authenticated"],
+        using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+      },
+    ),
+    pgPolicy(
+      "Provider notification batches can be deleted by a member of the team",
+      {
+        as: "permissive",
+        for: "delete",
+        to: ["authenticated"],
+        using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+      },
+    ),
+  ],
+);
+
 export const invoiceTemplates = pgTable(
   "invoice_templates",
   {
@@ -1522,6 +2120,8 @@ export const invoiceTemplates = pgTable(
       .defaultNow()
       .notNull(),
     teamId: uuid("team_id").notNull(),
+    name: text().default("Default").notNull(),
+    isDefault: boolean("is_default").default(false),
     customerLabel: text("customer_label"),
     fromLabel: text("from_label"),
     invoiceNoLabel: text("invoice_no_label"),
@@ -1559,6 +2159,14 @@ export const invoiceTemplates = pgTable(
     subtotalLabel: text("subtotal_label"),
     includePdf: boolean("include_pdf"),
     sendCopy: boolean("send_copy"),
+    includeLineItemTax: boolean("include_line_item_tax").default(false),
+    lineItemTaxLabel: text("line_item_tax_label"),
+    paymentEnabled: boolean("payment_enabled").default(false),
+    paymentTermsDays: integer("payment_terms_days").default(30),
+    emailSubject: text("email_subject"),
+    emailHeading: text("email_heading"),
+    emailBody: text("email_body"),
+    emailButtonText: text("email_button_text"),
   },
   (table) => [
     foreignKey({
@@ -1566,7 +2174,7 @@ export const invoiceTemplates = pgTable(
       foreignColumns: [teams.id],
       name: "invoice_settings_team_id_fkey",
     }).onDelete("cascade"),
-    unique("invoice_templates_team_id_key").on(table.teamId),
+    index("idx_invoice_templates_team_id").on(table.teamId),
     pgPolicy("Invoice templates can be handled by a member of the team", {
       as: "permissive",
       for: "all",
@@ -1594,6 +2202,7 @@ export const invoiceProducts = pgTable(
     price: numericCasted({ precision: 10, scale: 2 }),
     currency: text(),
     unit: text(),
+    taxRate: numericCasted("tax_rate", { precision: 10, scale: 2 }),
     isActive: boolean().default(true).notNull(),
     usageCount: integer("usage_count").default(0).notNull(),
     lastUsedAt: timestamp("last_used_at", {
@@ -1867,6 +2476,7 @@ export const inbox = pgTable(
     meta: json(),
     status: inboxStatusEnum().default("new"),
     website: text(),
+    senderEmail: text("sender_email"),
     displayName: text("display_name"),
     fts: tsvector("fts")
       .notNull()
@@ -1882,6 +2492,8 @@ export const inbox = pgTable(
     taxRate: numericCasted("tax_rate", { precision: 10, scale: 2 }),
     taxType: text("tax_type"),
     inboxAccountId: uuid("inbox_account_id"),
+    invoiceNumber: text("invoice_number"),
+    groupedInboxId: uuid("grouped_inbox_id"),
   },
   (table) => [
     index("inbox_attachment_id_idx").using(
@@ -1904,6 +2516,24 @@ export const inbox = pgTable(
       "btree",
       table.inboxAccountId.asc().nullsLast().op("uuid_ops"),
     ),
+    index("inbox_invoice_number_idx").using(
+      "btree",
+      table.invoiceNumber.asc().nullsLast().op("text_ops"),
+    ),
+    index("inbox_grouped_inbox_id_idx").using(
+      "btree",
+      table.groupedInboxId.asc().nullsLast().op("uuid_ops"),
+    ),
+    index("idx_inbox_display_name_trgm").using(
+      "gin",
+      table.displayName.asc().nullsLast().op("gin_trgm_ops"),
+    ),
+    // Composite index for insights activity queries
+    index("inbox_team_status_created_at_idx").on(
+      table.teamId,
+      table.status,
+      table.createdAt,
+    ),
     foreignKey({
       columns: [table.attachmentId],
       foreignColumns: [transactionAttachments.id],
@@ -1924,6 +2554,8 @@ export const inbox = pgTable(
       foreignColumns: [inboxAccounts.id],
       name: "inbox_inbox_account_id_fkey",
     }).onDelete("set null"),
+    // Note: groupedInboxId self-referential foreign key constraint is defined in migration
+    // to avoid TypeScript circular reference error (inbox.id referenced before inbox is fully defined)
     unique("inbox_reference_id_key").on(table.referenceId),
     pgPolicy("Inbox can be deleted by a member of the team", {
       as: "permissive",
@@ -1944,85 +2576,46 @@ export const inbox = pgTable(
   ],
 );
 
-export const transactionEmbeddings = pgTable(
-  "transaction_embeddings",
+export const inboxBlocklist = pgTable(
+  "inbox_blocklist",
   {
     id: uuid().defaultRandom().primaryKey().notNull(),
-    transactionId: uuid("transaction_id").notNull(),
-    teamId: uuid("team_id").notNull(),
-    embedding: vector("embedding", { dimensions: 768 }),
-    sourceText: text("source_text").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .defaultNow()
       .notNull(),
-    model: text("model").notNull().default("gemini-embedding-001"),
-  },
-  (table) => [
-    index("transaction_embeddings_transaction_id_idx").using(
-      "btree",
-      table.transactionId.asc().nullsLast().op("uuid_ops"),
-    ),
-    index("transaction_embeddings_team_id_idx").using(
-      "btree",
-      table.teamId.asc().nullsLast().op("uuid_ops"),
-    ),
-    // Vector similarity index for fast cosine similarity searches
-    index("transaction_embeddings_vector_idx").using(
-      "hnsw",
-      table.embedding.op("vector_cosine_ops"),
-    ),
-    foreignKey({
-      columns: [table.transactionId],
-      foreignColumns: [transactions.id],
-      name: "transaction_embeddings_transaction_id_fkey",
-    }).onDelete("cascade"),
-    foreignKey({
-      columns: [table.teamId],
-      foreignColumns: [teams.id],
-      name: "transaction_embeddings_team_id_fkey",
-    }).onDelete("cascade"),
-    unique("transaction_embeddings_unique").on(table.transactionId),
-  ],
-);
-
-export const inboxEmbeddings = pgTable(
-  "inbox_embeddings",
-  {
-    id: uuid().defaultRandom().primaryKey().notNull(),
-    inboxId: uuid("inbox_id").notNull(),
     teamId: uuid("team_id").notNull(),
-    embedding: vector("embedding", { dimensions: 768 }),
-    sourceText: text("source_text").notNull(),
-    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
-      .defaultNow()
-      .notNull(),
-    model: text("model").notNull().default("gemini-embedding-001"),
+    type: inboxBlocklistTypeEnum().notNull(),
+    value: text().notNull(),
   },
   (table) => [
-    index("inbox_embeddings_inbox_id_idx").using(
-      "btree",
-      table.inboxId.asc().nullsLast().op("uuid_ops"),
-    ),
-    index("inbox_embeddings_team_id_idx").using(
-      "btree",
-      table.teamId.asc().nullsLast().op("uuid_ops"),
-    ),
-    // Vector similarity index for fast cosine similarity searches
-    index("inbox_embeddings_vector_idx").using(
-      "hnsw",
-      table.embedding.op("vector_cosine_ops"),
-    ),
-    foreignKey({
-      columns: [table.inboxId],
-      foreignColumns: [inbox.id],
-      name: "inbox_embeddings_inbox_id_fkey",
-    }).onDelete("cascade"),
     foreignKey({
       columns: [table.teamId],
       foreignColumns: [teams.id],
-      name: "inbox_embeddings_team_id_fkey",
+      name: "inbox_blocklist_team_id_fkey",
     }).onDelete("cascade"),
-    unique("inbox_embeddings_unique").on(table.inboxId),
+    unique("inbox_blocklist_team_id_type_value_key").on(
+      table.teamId,
+      table.type,
+      table.value,
+    ),
+    pgPolicy("Inbox blocklist can be deleted by a member of the team", {
+      as: "permissive",
+      for: "delete",
+      to: ["public"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Inbox blocklist can be inserted by a member of the team", {
+      as: "permissive",
+      for: "insert",
+      to: ["public"],
+      withCheck: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Inbox blocklist can be selected by a member of the team", {
+      as: "permissive",
+      for: "select",
+      to: ["public"],
+      using: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
   ],
 );
 
@@ -2050,10 +2643,6 @@ export const transactionMatchSuggestions = pgTable(
     amountScore: numericCasted("amount_score", { precision: 4, scale: 3 }),
     currencyScore: numericCasted("currency_score", { precision: 4, scale: 3 }),
     dateScore: numericCasted("date_score", { precision: 4, scale: 3 }),
-    embeddingScore: numericCasted("embedding_score", {
-      precision: 4,
-      scale: 3,
-    }),
     nameScore: numericCasted("name_score", { precision: 4, scale: 3 }),
 
     // Match context
@@ -2094,6 +2683,12 @@ export const transactionMatchSuggestions = pgTable(
       table.transactionId.asc().nullsLast().op("uuid_ops"),
       table.teamId.asc().nullsLast().op("uuid_ops"),
       table.status.asc().nullsLast().op("text_ops"),
+    ),
+    index("transaction_match_suggestions_team_status_created_idx").using(
+      "btree",
+      table.teamId.asc().nullsLast().op("uuid_ops"),
+      table.status.asc().nullsLast().op("text_ops"),
+      table.createdAt.desc().nullsLast(),
     ),
     foreignKey({
       columns: [table.inboxId],
@@ -2231,7 +2826,7 @@ export const usersOnTeam = pgTable(
 export const transactionCategories = pgTable(
   "transaction_categories",
   {
-    id: uuid().defaultRandom().notNull(),
+    id: uuid().defaultRandom().notNull().unique(),
     name: text().notNull(),
     teamId: uuid("team_id").notNull(),
     color: text(),
@@ -2494,10 +3089,10 @@ export const oauthApplications = pgTable(
     screenshots: text("screenshots").array().default(sql`'{}'::text[]`),
     redirectUris: text("redirect_uris").array().notNull(),
     clientId: text("client_id").notNull().unique(),
-    clientSecret: text("client_secret").notNull(),
+    clientSecret: text("client_secret"),
     scopes: text("scopes").array().notNull().default(sql`'{}'::text[]`),
-    teamId: uuid("team_id").notNull(),
-    createdBy: uuid("created_by").notNull(),
+    teamId: uuid("team_id"),
+    createdBy: uuid("created_by"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
       .notNull()
       .defaultNow(),
@@ -2758,6 +3353,7 @@ export const teamsRelations = relations(teams, ({ many }) => ({
   users: many(users),
   trackerProjects: many(trackerProjects),
   inboxes: many(inbox),
+  inboxBlocklist: many(inboxBlocklist),
   documentTagAssignments: many(documentTagAssignments),
   usersOnTeams: many(usersOnTeam),
   transactionCategories: many(transactionCategories),
@@ -2876,6 +3472,13 @@ export const inboxAccountsRelations = relations(inboxAccounts, ({ one }) => ({
   }),
 }));
 
+export const inboxBlocklistRelations = relations(inboxBlocklist, ({ one }) => ({
+  team: one(teams, {
+    fields: [inboxBlocklist.teamId],
+    references: [teams.id],
+  }),
+}));
+
 export const bankConnectionsRelations = relations(
   bankConnections,
   ({ one, many }) => ({
@@ -2900,7 +3503,34 @@ export const invoicesRelations = relations(invoices, ({ one }) => ({
     fields: [invoices.teamId],
     references: [teams.id],
   }),
+  invoiceRecurring: one(invoiceRecurring, {
+    fields: [invoices.invoiceRecurringId],
+    references: [invoiceRecurring.id],
+  }),
 }));
+
+export const invoiceRecurringRelations = relations(
+  invoiceRecurring,
+  ({ one, many }) => ({
+    team: one(teams, {
+      fields: [invoiceRecurring.teamId],
+      references: [teams.id],
+    }),
+    user: one(users, {
+      fields: [invoiceRecurring.userId],
+      references: [users.id],
+    }),
+    customer: one(customers, {
+      fields: [invoiceRecurring.customerId],
+      references: [customers.id],
+    }),
+    invoiceTemplate: one(invoiceTemplates, {
+      fields: [invoiceRecurring.templateId],
+      references: [invoiceTemplates.id],
+    }),
+    invoices: many(invoices),
+  }),
+);
 
 export const trackerReportsRelations = relations(trackerReports, ({ one }) => ({
   user: one(users, {
@@ -3266,4 +3896,320 @@ export const notificationSettings = pgTable(
       using: sql`(user_id = auth.uid())`,
     }),
   ],
+);
+
+/**
+ * Accounting Sync Records
+ * Tracks which transactions have been synced to which accounting providers
+ * Supports multiple providers per transaction (Xero AND QuickBooks, etc.)
+ */
+export const accountingSyncRecords = pgTable(
+  "accounting_sync_records",
+  {
+    id: uuid().defaultRandom().primaryKey().notNull(),
+    transactionId: uuid("transaction_id").notNull(),
+    teamId: uuid("team_id").notNull(),
+    provider: accountingProviderEnum().notNull(),
+    providerTenantId: text("provider_tenant_id").notNull(),
+    providerTransactionId: text("provider_transaction_id"),
+    // Maps Midday attachment IDs to provider attachment IDs for sync tracking
+    // Format: { "midday-attachment-id": "provider-attachment-id" }
+    syncedAttachmentMapping: jsonb("synced_attachment_mapping")
+      .default(sql`'{}'::jsonb`)
+      .notNull()
+      .$type<Record<string, string | null>>(),
+    syncedAt: timestamp("synced_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+    syncType: accountingSyncTypeEnum("sync_type"),
+    status: accountingSyncStatusEnum().default("synced").notNull(),
+    errorMessage: text("error_message"),
+    // Standardized error code for frontend handling (e.g., "ATTACHMENT_UNSUPPORTED_TYPE", "AUTH_EXPIRED")
+    errorCode: text("error_code"),
+    // Provider-specific entity type (e.g., "Purchase", "SalesReceipt", "Voucher", "BankTransaction")
+    providerEntityType: text("provider_entity_type"),
+    // When the record was first created (synced_at gets updated on every sync)
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "string" })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    // Primary lookup: find syncs for a transaction
+    index("idx_accounting_sync_transaction").on(table.transactionId),
+    // Query syncs by team and provider
+    index("idx_accounting_sync_team_provider").on(table.teamId, table.provider),
+    // Query by status for retry logic
+    index("idx_accounting_sync_status").on(table.teamId, table.status),
+    // Unique constraint: one sync record per transaction per provider
+    unique("accounting_sync_records_transaction_provider_key").on(
+      table.transactionId,
+      table.provider,
+    ),
+    foreignKey({
+      columns: [table.transactionId],
+      foreignColumns: [transactions.id],
+      name: "accounting_sync_records_transaction_id_fkey",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.teamId],
+      foreignColumns: [teams.id],
+      name: "accounting_sync_records_team_id_fkey",
+    }).onDelete("cascade"),
+    pgPolicy("Team members can view their sync records", {
+      as: "permissive",
+      for: "select",
+      to: ["public"],
+    }),
+    pgPolicy("Team members can insert sync records", {
+      as: "permissive",
+      for: "insert",
+      to: ["public"],
+      withCheck: sql`(team_id IN ( SELECT private.get_teams_for_authenticated_user() AS get_teams_for_authenticated_user))`,
+    }),
+    pgPolicy("Team members can update sync records", {
+      as: "permissive",
+      for: "update",
+      to: ["public"],
+    }),
+  ],
+);
+
+export const accountingSyncRecordsRelations = relations(
+  accountingSyncRecords,
+  ({ one }) => ({
+    transaction: one(transactions, {
+      fields: [accountingSyncRecords.transactionId],
+      references: [transactions.id],
+    }),
+    team: one(teams, {
+      fields: [accountingSyncRecords.teamId],
+      references: [teams.id],
+    }),
+  }),
+);
+
+// ============================================================================
+// INSIGHTS - AI-generated business insights (weekly, monthly, quarterly, yearly)
+// ============================================================================
+
+// Type definitions for JSONB columns
+export type InsightMetric = {
+  type: string;
+  label: string;
+  value: number;
+  previousValue: number;
+  change: number; // percentage
+  changeDirection: "up" | "down" | "flat";
+  unit?: string;
+  historicalContext?: string; // "Highest since October"
+};
+
+export type InsightAnomaly = {
+  type: string;
+  severity: "info" | "warning" | "alert";
+  message: string;
+  metricType?: string;
+};
+
+export type ExpenseAnomaly = {
+  type: "category_spike" | "new_category" | "category_decrease";
+  severity: "info" | "warning" | "alert";
+  categoryName: string;
+  categorySlug: string;
+  currentAmount: number;
+  previousAmount: number;
+  change: number; // percentage change
+  currency: string;
+  message: string;
+  tip?: string; // actionable tip for the user
+};
+
+export type InsightMilestone = {
+  type: string;
+  description: string;
+  achievedAt: string;
+};
+
+export type InsightActivity = {
+  invoicesSent: number;
+  invoicesPaid: number;
+  invoicesOverdue: number;
+  overdueAmount?: number;
+  hoursTracked: number;
+  largestPayment?: { customer: string; amount: number };
+  newCustomers: number;
+  receiptsMatched: number;
+  transactionsCategorized: number;
+  // Upcoming scheduled/recurring invoices
+  upcomingInvoices?: {
+    count: number;
+    totalAmount: number;
+    nextDueDate?: string;
+    items?: Array<{
+      customerName: string;
+      amount: number;
+      scheduledAt: string;
+      frequency?: string;
+    }>;
+  };
+};
+
+// Forward-looking predictions stored for follow-through in next insight
+export type InsightPredictions = {
+  // Invoices due next week
+  invoicesDue?: {
+    count: number;
+    totalAmount: number;
+    currency: string;
+  };
+  // Current streak info to track if maintained
+  streakAtRisk?: {
+    type: string;
+    count: number;
+  };
+  // Any other forward-looking items
+  notes?: string[];
+};
+
+export type InsightContent = {
+  title: string;
+  summary: string;
+  story: string;
+  actions: Array<{
+    text: string;
+    type?: string;
+    entityType?: "invoice" | "project" | "customer" | "transaction";
+    entityId?: string;
+  }>;
+};
+
+export const insights = pgTable(
+  "insights",
+  {
+    id: uuid().defaultRandom().primaryKey(),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+
+    // Flexible period definition
+    periodType: insightPeriodTypeEnum("period_type").notNull(),
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+    periodYear: smallint("period_year").notNull(),
+    periodNumber: smallint("period_number").notNull(), // Week 1-53, Month 1-12, Quarter 1-4
+
+    status: insightStatusEnum().default("pending").notNull(),
+
+    // Selected 4 key metrics (dynamically chosen)
+    selectedMetrics: jsonb("selected_metrics").$type<InsightMetric[]>(),
+
+    // Full metrics snapshot (for drill-down)
+    allMetrics: jsonb("all_metrics").$type<Record<string, InsightMetric>>(),
+
+    // Detected anomalies and patterns
+    anomalies: jsonb().$type<InsightAnomaly[]>(),
+
+    // Expense category anomalies (spikes, new categories, etc.)
+    expenseAnomalies: jsonb("expense_anomalies").$type<ExpenseAnomaly[]>(),
+
+    // Streaks and milestones
+    milestones: jsonb().$type<InsightMilestone[]>(),
+
+    // Activity context
+    activity: jsonb().$type<InsightActivity>(),
+
+    currency: varchar({ length: 3 }).notNull(),
+
+    // AI-generated title (for card headers and email subjects)
+    title: text(),
+
+    // AI-generated content (relief-first structure)
+    content: jsonb().$type<InsightContent>(),
+
+    // Forward-looking predictions for follow-through tracking
+    predictions: jsonb().$type<InsightPredictions>(),
+
+    // Audio narration storage path: {teamId}/insights/{insightId}.mp3
+    audioPath: text("audio_path"),
+
+    generatedAt: timestamp("generated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    unique("insights_team_period_unique").on(
+      table.teamId,
+      table.periodType,
+      table.periodYear,
+      table.periodNumber,
+    ),
+    index("insights_team_id_idx").on(table.teamId),
+    index("insights_team_period_type_idx").on(
+      table.teamId,
+      table.periodType,
+      table.generatedAt.desc(),
+    ),
+    pgPolicy("Team members can view their insights", {
+      as: "permissive",
+      for: "select",
+      to: ["public"],
+    }),
+  ],
+);
+
+export const insightsRelations = relations(insights, ({ one, many }) => ({
+  team: one(teams, {
+    fields: [insights.teamId],
+    references: [teams.id],
+  }),
+  userStatuses: many(insightUserStatus),
+}));
+
+// Per-user insight interaction tracking (read/dismiss state)
+export const insightUserStatus = pgTable(
+  "insight_user_status",
+  {
+    insightId: uuid("insight_id")
+      .notNull()
+      .references(() => insights.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.insightId, table.userId] }),
+    index("insight_user_status_user_idx").on(table.userId),
+    index("insight_user_status_insight_idx").on(table.insightId),
+    pgPolicy("Users can manage their own insight status", {
+      as: "permissive",
+      for: "all",
+      to: ["public"],
+    }),
+  ],
+);
+
+export const insightUserStatusRelations = relations(
+  insightUserStatus,
+  ({ one }) => ({
+    insight: one(insights, {
+      fields: [insightUserStatus.insightId],
+      references: [insights.id],
+    }),
+    user: one(users, {
+      fields: [insightUserStatus.userId],
+      references: [users.id],
+    }),
+  }),
 );

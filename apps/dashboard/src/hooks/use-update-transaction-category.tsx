@@ -1,9 +1,10 @@
 "use client";
 
-import { useTRPC } from "@/trpc/client";
 import { ToastAction } from "@midday/ui/toast";
 import { toast } from "@midday/ui/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInvalidateTransactionQueries } from "@/hooks/use-invalidate-transaction-queries";
+import { useTRPC } from "@/trpc/client";
 
 type Category = {
   id?: string;
@@ -21,16 +22,23 @@ export function useUpdateTransactionCategory(
 ) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const invalidateTransactionQueries = useInvalidateTransactionQueries();
 
   const updateTransactionMutation = useMutation(
     trpc.transactions.update.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (_, variables) => {
         queryClient.invalidateQueries({
           queryKey: trpc.transactions.get.infiniteQueryKey(),
         });
         queryClient.invalidateQueries({
           queryKey: trpc.transactions.getById.queryKey(),
         });
+
+        // If category changed, invalidate reports
+        if ("categorySlug" in variables) {
+          invalidateTransactionQueries();
+        }
+
         options?.onSuccess?.();
       },
       onError: options?.onError,
@@ -39,13 +47,18 @@ export function useUpdateTransactionCategory(
 
   const updateTransactionsMutation = useMutation(
     trpc.transactions.updateMany.mutationOptions({
-      onSuccess: () => {
+      onSuccess: (_, variables) => {
         queryClient.invalidateQueries({
           queryKey: trpc.transactions.get.infiniteQueryKey(),
         });
         queryClient.invalidateQueries({
           queryKey: trpc.transactions.getById.queryKey(),
         });
+
+        // If category changed, invalidate reports
+        if ("categorySlug" in variables) {
+          invalidateTransactionQueries();
+        }
       },
     }),
   );

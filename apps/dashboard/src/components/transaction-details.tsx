@@ -1,8 +1,6 @@
 "use client";
 
-import { useTransactionParams } from "@/hooks/use-transaction-params";
-import { useUpdateTransactionCategory } from "@/hooks/use-update-transaction-category";
-import { useTRPC } from "@/trpc/client";
+import { LogEvents } from "@midday/events/events";
 import {
   Accordion,
   AccordionContent,
@@ -24,8 +22,13 @@ import { Switch } from "@midday/ui/switch";
 import { ToastAction } from "@midday/ui/toast";
 import { toast } from "@midday/ui/use-toast";
 import { getTaxTypeLabel } from "@midday/utils/tax";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { format } from "date-fns";
+import { format, parseISO } from "date-fns";
+import { useInvalidateTransactionQueries } from "@/hooks/use-invalidate-transaction-queries";
+import { useTransactionParams } from "@/hooks/use-transaction-params";
+import { useUpdateTransactionCategory } from "@/hooks/use-update-transaction-category";
+import { useTRPC } from "@/trpc/client";
 import { AssignUser } from "./assign-user";
 import { FormatAmount } from "./format-amount";
 import { Note } from "./note";
@@ -41,6 +44,8 @@ export function TransactionDetails() {
   const trpc = useTRPC();
   const { transactionId } = useTransactionParams();
   const queryClient = useQueryClient();
+  const { track } = useOpenPanel();
+  const invalidateTransactionQueries = useInvalidateTransactionQueries();
 
   const { updateCategory } = useUpdateTransactionCategory({
     onSuccess: () => {
@@ -50,11 +55,14 @@ export function TransactionDetails() {
     },
   });
 
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, isLoading } = useQuery({
     ...trpc.transactions.getById.queryOptions({ id: transactionId! }),
     enabled: Boolean(transactionId),
-    staleTime: 0, // Always consider data stale so it always refetches
-    initialData: () => {
+    staleTime: 30 * 1000, // 30 seconds - prevents excessive refetches when reopening
+    // Use placeholderData instead of initialData to show cached list data while fetching
+    // This ensures React Query always fetches fresh data (including suggestion details)
+    // while still providing immediate UI feedback from the list cache
+    placeholderData: () => {
       const pages = queryClient
         .getQueriesData({ queryKey: trpc.transactions.get.infiniteQueryKey() })
         // @ts-expect-error
@@ -67,10 +75,20 @@ export function TransactionDetails() {
 
   const updateTransactionMutation = useMutation(
     trpc.transactions.update.mutationOptions({
-      onSuccess: () => {
-        queryClient.invalidateQueries({
-          queryKey: trpc.transactions.get.infiniteQueryKey(),
-        });
+      onSuccess: (_, variables) => {
+        track(LogEvents.TransactionUpdated.name);
+        if ("categorySlug" in variables) {
+          track(LogEvents.TransactionCategoryChanged.name, {
+            category: variables.categorySlug,
+          });
+        }
+        if ("categorySlug" in variables || "internal" in variables) {
+          invalidateTransactionQueries();
+        } else {
+          queryClient.invalidateQueries({
+            queryKey: trpc.transactions.get.infiniteQueryKey(),
+          });
+        }
       },
       onMutate: async (variables) => {
         // Cancel any outgoing refetches
@@ -208,7 +226,7 @@ export function TransactionDetails() {
 
   const updateTransactionsMutation = useMutation(
     trpc.transactions.updateMany.mutationOptions({
-      onSuccess: (_, data) => {
+      onSuccess: (_, _data) => {
         queryClient.invalidateQueries({
           queryKey: trpc.transactions.getById.queryKey({ id: transactionId! }),
         });
@@ -221,7 +239,52 @@ export function TransactionDetails() {
   );
 
   if (isLoading || !data) {
-    return null;
+    return (
+      <div className="h-[calc(100vh-80px)] scrollbar-hide overflow-auto pb-12">
+        <div className="flex justify-between mb-8">
+          <div className="flex-1 flex-col">
+            <div className="flex items-center justify-between">
+              <div className="flex space-x-2 items-center">
+                <Skeleton className="size-5 rounded-full" />
+                <Skeleton className="w-[100px] h-[14px]" />
+              </div>
+              <Skeleton className="w-[80px] h-[14px]" />
+            </div>
+
+            <div className="mt-6 mb-3">
+              <Skeleton className="w-[35%] h-[22px]" />
+            </div>
+
+            <div className="flex flex-col w-full space-y-1">
+              <Skeleton className="w-[50%] h-[36px]" />
+              <Skeleton className="w-[60px] h-[12px]" />
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4 mt-6 mb-2">
+          <div>
+            <Skeleton className="w-[60px] h-[14px] mb-2" />
+            <Skeleton className="w-full h-[36px]" />
+          </div>
+          <div>
+            <Skeleton className="w-[50px] h-[14px] mb-2" />
+            <Skeleton className="w-full h-[36px]" />
+          </div>
+        </div>
+
+        <div className="mt-6">
+          <Skeleton className="w-[40px] h-[14px] mb-2" />
+          <Skeleton className="w-full h-[36px]" />
+        </div>
+
+        <div className="mt-8 space-y-4">
+          <Skeleton className="w-full h-[20px]" />
+          <Skeleton className="w-full h-[20px]" />
+          <Skeleton className="w-full h-[20px]" />
+        </div>
+      </div>
+    );
   }
 
   const defaultValue = ["attachment"];
@@ -252,7 +315,7 @@ export function TransactionDetails() {
                 />
               )}
               <span className="text-[#606060] text-xs select-text">
-                {data?.date && format(new Date(data.date), "MMM d, y")}
+                {data?.date && format(parseISO(data.date), "MMM d, y")}
               </span>
             </div>
           )}
@@ -271,7 +334,7 @@ export function TransactionDetails() {
               ) : (
                 <span
                   className={cn(
-                    "text-4xl font-mono select-text",
+                    "text-4xl select-text font-serif",
                     data?.amount > 0 && "text-[#00C969]",
                   )}
                 >
@@ -407,12 +470,12 @@ export function TransactionDetails() {
           <AccordionContent className="select-text">
             <div className="mb-4 border-b pb-4">
               <Label className="mb-2 block font-medium text-md">
-                Exclude from analytics
+                Exclude from reports
               </Label>
               <div className="flex flex-row items-center justify-between">
                 <div className="space-y-0.5 pr-4">
                   <p className="text-xs text-muted-foreground">
-                    Exclude this transaction from analytics like profit, expense
+                    Exclude this transaction from reports like profit, expense
                     and revenue. This is useful for internal transfers between
                     accounts to avoid double-counting.
                   </p>
@@ -562,7 +625,10 @@ export function TransactionDetails() {
         </AccordionItem>
       </Accordion>
 
-      <TransactionShortcuts />
+      <TransactionShortcuts
+        isFulfilled={data?.isFulfilled ?? false}
+        status={data?.status ?? ""}
+      />
     </div>
   );
 }

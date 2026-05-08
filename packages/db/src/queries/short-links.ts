@@ -1,7 +1,7 @@
-import type { Database } from "@db/client";
-import { shortLinks, teams } from "@db/schema";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import type { Database } from "../client";
+import { shortLinks, teams } from "../schema";
 
 export type ShortLink = {
   id: string;
@@ -48,7 +48,7 @@ type CreateShortLinkData = {
 };
 
 export async function createShortLink(db: Database, data: CreateShortLinkData) {
-  const shortId = nanoid(8);
+  const shortId = nanoid(21);
 
   const [result] = await db
     .insert(shortLinks)

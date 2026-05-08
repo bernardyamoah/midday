@@ -8,9 +8,9 @@ import {
 import { enrichmentSchema } from "@jobs/utils/enrichment-schema";
 import { processBatch } from "@jobs/utils/process-batch";
 import {
-  type UpdateTransactionEnrichmentParams,
   getTransactionsForEnrichment,
   markTransactionsAsEnriched,
+  type UpdateTransactionEnrichmentParams,
   updateTransactionEnrichments,
 } from "@midday/db/queries";
 import { logger, schemaTask } from "@trigger.dev/sdk";
@@ -18,10 +18,9 @@ import { generateObject } from "ai";
 import { z } from "zod";
 
 const BATCH_SIZE = 50;
-const GOOGLE_API_KEY = process.env.GOOGLE_GENERATIVE_AI_API_KEY!;
 
 const google = createGoogleGenerativeAI({
-  apiKey: GOOGLE_API_KEY,
+  apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY!,
 });
 
 export const enrichTransactions = schemaTask({

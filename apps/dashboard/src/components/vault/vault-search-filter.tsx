@@ -1,9 +1,5 @@
 "use client";
 
-import { generateVaultFilters } from "@/actions/ai/filters/generate-vault-filters";
-import { FilterList } from "@/components/filter-list";
-import { useDocumentFilterParams } from "@/hooks/use-document-filter-params";
-import { useTRPC } from "@/trpc/client";
 import { Calendar } from "@midday/ui/calendar";
 import { cn } from "@midday/ui/cn";
 import {
@@ -21,20 +17,23 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { Input } from "@midday/ui/input";
 import { useQuery } from "@tanstack/react-query";
-import { readStreamableValue } from "ai/rsc";
-import { formatISO } from "date-fns";
+import { formatISO, parseISO } from "date-fns";
 import { useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { FilterList } from "@/components/filter-list";
+import { useDocumentFilterParams } from "@/hooks/use-document-filter-params";
+import { useUserQuery } from "@/hooks/use-user";
+import { useTRPC } from "@/trpc/client";
 
 export function VaultSearchFilter() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const [streaming, setStreaming] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const trpc = useTRPC();
+  const { data: user } = useUserQuery();
 
   const { filter, setFilter } = useDocumentFilterParams();
-  const [prompt, setPrompt] = useState(filter.q ?? "");
+  const [input, setInput] = useState(filter.q ?? "");
 
   const shouldFetch = isOpen;
 
@@ -46,13 +45,13 @@ export function VaultSearchFilter() {
   useHotkeys(
     "esc",
     () => {
-      setPrompt("");
+      setInput("");
       setFilter(null);
       setIsOpen(false);
     },
     {
       enableOnFormTags: true,
-      enabled: Boolean(prompt) && isFocused,
+      enabled: Boolean(input) && isFocused,
     },
   );
 
@@ -65,43 +64,16 @@ export function VaultSearchFilter() {
     const value = evt.target.value;
 
     if (value) {
-      setPrompt(value);
+      setInput(value);
     } else {
       setFilter(null);
-      setPrompt("");
+      setInput("");
     }
   };
 
-  const handleSubmit = async () => {
-    // If the user is typing a query with multiple words, we want to stream the results
-    if (prompt.split(" ").length > 1) {
-      setStreaming(true);
-
-      const { object } = await generateVaultFilters(prompt);
-
-      let finalObject = {};
-
-      for await (const partialObject of readStreamableValue(object)) {
-        if (partialObject) {
-          finalObject = {
-            ...finalObject,
-            ...partialObject,
-            start: partialObject?.start ?? null,
-            end: partialObject?.end ?? null,
-            q: partialObject?.name ?? null,
-          };
-        }
-      }
-
-      setFilter({
-        q: null,
-        ...finalObject,
-      });
-
-      setStreaming(false);
-    } else {
-      setFilter({ q: prompt.length > 0 ? prompt : null });
-    }
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setFilter({ q: input.length > 0 ? input : null });
   };
 
   const validFilters = Object.fromEntries(
@@ -125,9 +97,9 @@ export function VaultSearchFilter() {
           <Icons.Search className="absolute pointer-events-none left-3 top-[11px]" />
           <Input
             ref={inputRef}
-            placeholder="Search or type filter"
+            placeholder="Search documents..."
             className="pl-9 w-full md:w-[350px] pr-8"
-            value={prompt}
+            value={input}
             onChange={handleSearch}
             autoComplete="off"
             autoCapitalize="none"
@@ -154,7 +126,6 @@ export function VaultSearchFilter() {
 
         <FilterList
           filters={validFilters}
-          loading={streaming}
           onRemove={setFilter}
           tags={tagsData}
         />
@@ -182,14 +153,15 @@ export function VaultSearchFilter() {
                 <Calendar
                   mode="range"
                   initialFocus
+                  weekStartsOn={user?.weekStartsOnMonday ? 1 : 0}
                   toDate={new Date()}
                   selected={
                     filter.start || filter.end
                       ? {
                           from: filter.start
-                            ? new Date(filter.start)
+                            ? parseISO(filter.start)
                             : undefined,
-                          to: filter.end ? new Date(filter.end) : undefined,
+                          to: filter.end ? parseISO(filter.end) : undefined,
                         }
                       : undefined
                   }
@@ -228,6 +200,7 @@ export function VaultSearchFilter() {
                 {tagsData?.map((tag) => (
                   <DropdownMenuCheckboxItem
                     key={tag.id}
+                    onSelect={(e) => e.preventDefault()}
                     onCheckedChange={() => {
                       setFilter({
                         tags: filter?.tags?.includes(tag.id)

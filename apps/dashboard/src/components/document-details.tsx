@@ -1,5 +1,7 @@
 "use client";
 
+import { SheetHeader } from "@midday/ui/sheet";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DocumentActions } from "@/components/document-actions";
 import { DocumentDetailsSkeleton } from "@/components/document-details-skeleton";
 import { DocumentTags } from "@/components/document-tags";
@@ -8,8 +10,6 @@ import { VaultRelatedFiles } from "@/components/vault/vault-related-files";
 import { useDocumentParams } from "@/hooks/use-document-params";
 import { useTRPC } from "@/trpc/client";
 import { formatSize } from "@/utils/format";
-import { SheetHeader } from "@midday/ui/sheet";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 export function DocumentDetails() {
   const trpc = useTRPC();
@@ -25,8 +25,8 @@ export function DocumentDetails() {
       id: params.documentId!,
     }),
     enabled: isOpen,
-    staleTime: 0, // Always consider data stale so it always refetches
-    initialData: () => {
+    staleTime: 30 * 1000, // 30 seconds - prevents excessive refetches when reopening
+    placeholderData: () => {
       const pages = queryClient
         .getQueriesData({ queryKey: trpc.documents.get.infiniteQueryKey() })
         // @ts-expect-error
@@ -49,7 +49,7 @@ export function DocumentDetails() {
     <div className="flex flex-col flex-grow min-h-0 relative h-full w-full">
       <SheetHeader className="mb-4 flex justify-between items-center flex-row">
         <div className="min-w-0 flex-1 max-w-[70%] flex flex-row gap-2 items-end">
-          <h2 className="text-lg truncate flex-0">
+          <h2 className="text-lg truncate flex-0 font-serif">
             {data?.title ?? data?.name?.split("/").at(-1)}
           </h2>
           <span className="text-sm text-muted-foreground whitespace-nowrap">
@@ -64,7 +64,7 @@ export function DocumentDetails() {
       <div className="h-full max-h-[763px] p-0 pb-4 overflow-x-auto scrollbar-hide">
         <div className="flex flex-col flex-grow min-h-0 relative h-full w-full items-center justify-center">
           <FileViewer
-            url={`/api/proxy?filePath=vault/${data?.pathTokens?.join("/")}`}
+            url={`${process.env.NEXT_PUBLIC_API_URL}/files/proxy?filePath=vault/${data?.pathTokens?.join("/")}`}
             // @ts-expect-error - mimetype is not typed (JSONB)
             mimeType={data?.metadata?.mimetype}
             maxWidth={565}
@@ -79,7 +79,9 @@ export function DocumentDetails() {
           </p>
         )}
 
-        <DocumentTags tags={data?.documentTagAssignments} id={data?.id!} />
+        {data?.id && (
+          <DocumentTags tags={data.documentTagAssignments} id={data.id} />
+        )}
 
         {fullView && <VaultRelatedFiles />}
       </div>

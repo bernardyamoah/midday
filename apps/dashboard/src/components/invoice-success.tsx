@@ -1,15 +1,17 @@
 "use client";
 
+import { TZDate } from "@date-fns/tz";
+import { formatEditorContent } from "@midday/invoice/format-to-html";
+import { Button } from "@midday/ui/button";
+import { Icons } from "@midday/ui/icons";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { format } from "date-fns";
+import { motion } from "framer-motion";
+import { useFileUrl } from "@/hooks/use-file-url";
 import { useInvoiceParams } from "@/hooks/use-invoice-params";
 import { downloadFile } from "@/lib/download";
 import { useTRPC } from "@/trpc/client";
 import { getUrl } from "@/utils/environment";
-import { formatEditorContent } from "@midday/invoice/format-to-html";
-import { Button } from "@midday/ui/button";
-import { Icons } from "@midday/ui/icons";
-import { useQuery } from "@tanstack/react-query";
-import { format } from "date-fns";
-import { motion } from "framer-motion";
 import { CopyInput } from "./copy-input";
 import { FormatAmount } from "./format-amount";
 import { InvoiceSheetHeader } from "./invoice-sheet-header";
@@ -17,7 +19,9 @@ import { OpenURL } from "./open-url";
 
 export function InvoiceSuccess() {
   const trpc = useTRPC();
-  const { invoiceId, setParams } = useInvoiceParams();
+  const queryClient = useQueryClient();
+  const { invoiceId, canvas, setParams } = useInvoiceParams();
+  const isCanvas = canvas === true;
 
   const { data: invoice } = useQuery(
     trpc.invoice.getById.queryOptions(
@@ -30,16 +34,21 @@ export function InvoiceSuccess() {
     ),
   );
 
+  const { url: downloadUrl } = useFileUrl({
+    type: "invoice",
+    invoiceId: invoiceId!,
+  });
+
   if (!invoice) {
     return null;
   }
 
   return (
     <>
-      <InvoiceSheetHeader invoiceId={invoiceId!} />
+      {!isCanvas && <InvoiceSheetHeader invoiceId={invoiceId!} />}
 
-      <div className="flex flex-col justify-center h-[calc(100vh-260px)]">
-        <div className="bg-[#F2F2F2] dark:bg-background p-6 relative">
+      <div className="flex flex-col justify-center h-[calc(100vh-260px)] max-w-[450px] mx-auto w-full">
+        <div className="bg-[#F2F2F2] dark:bg-[#121212] p-6 relative">
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -54,9 +63,7 @@ export function InvoiceSuccess() {
                 <span className="text-[11px] text-[#878787] font-mono">:</span>
               </div>
 
-              <span className="font-mono text-[11px]">
-                {invoice.invoiceNumber}
-              </span>
+              <span className="text-[11px]">{invoice.invoiceNumber}</span>
             </div>
 
             <div className="flex space-x-1 items-center">
@@ -67,9 +74,9 @@ export function InvoiceSuccess() {
                 <span className="text-[11px] text-[#878787] font-mono">:</span>
               </div>
 
-              <span className="font-mono text-[11px]">
+              <span className="text-[11px]">
                 {format(
-                  new Date(invoice.dueDate!),
+                  new TZDate(invoice.dueDate!, "UTC"),
                   invoice.template.dateFormat,
                 )}
               </span>
@@ -84,7 +91,7 @@ export function InvoiceSuccess() {
             <span className="text-[11px] font-mono">
               {invoice.template.customerLabel}
             </span>
-            <div className="font-mono text-[#878787]">
+            <div className="text-[#878787]">
               {/* @ts-expect-error - customerDetails is JSONB */}
               {formatEditorContent(invoice.customerDetails)}
             </div>
@@ -100,7 +107,7 @@ export function InvoiceSuccess() {
               {invoice.template.totalSummaryLabel}
             </span>
 
-            <span className="font-mono text-xl">
+            <span className="text-xl">
               {invoice.amount && invoice.currency && (
                 <FormatAmount
                   amount={invoice.amount}
@@ -140,11 +147,11 @@ export function InvoiceSuccess() {
                   variant="secondary"
                   className="size-[40px] hover:bg-secondary shrink-0"
                   onClick={() => {
-                    downloadFile(
-                      `/api/download/invoice?id=${invoice.id}`,
-                      `${invoice.invoiceNumber}.pdf`,
-                    );
+                    if (downloadUrl) {
+                      downloadFile(downloadUrl, `${invoice.invoiceNumber}.pdf`);
+                    }
                   }}
+                  disabled={!downloadUrl}
                 >
                   <div>
                     <Icons.ArrowCoolDown className="size-4" />
@@ -163,7 +170,7 @@ export function InvoiceSuccess() {
             {Array.from({ length: 10 }).map((_, index) => (
               <div
                 key={index.toString()}
-                className="size-[30px] rounded-full bg-background dark:bg-[#0C0C0C]"
+                className="size-[30px] rounded-full bg-[#fcfcfc] dark:bg-[#121212]"
               />
             ))}
           </motion.div>
@@ -175,17 +182,20 @@ export function InvoiceSuccess() {
           <Button variant="secondary">View invoice</Button>
         </OpenURL>
 
-        <Button
-          onClick={() => {
-            setParams(null);
+        {!isCanvas && (
+          <Button
+            onClick={async () => {
+              await queryClient.refetchQueries({
+                queryKey: trpc.invoice.defaultSettings.queryKey(),
+              });
+              setParams(null);
 
-            setTimeout(() => {
-              setParams({ type: "create" });
-            }, 600);
-          }}
-        >
-          Create another
-        </Button>
+              setParams({ invoiceType: "create" });
+            }}
+          >
+            Create another
+          </Button>
+        )}
       </div>
     </>
   );

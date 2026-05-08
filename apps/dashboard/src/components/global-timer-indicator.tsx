@@ -1,9 +1,9 @@
 "use client";
 
-import { useGlobalTimerStatus } from "@/hooks/use-global-timer-status";
-import { secondsToHoursAndMinutes } from "@/utils/format";
 import { cn } from "@midday/ui/cn";
 import { Icons } from "@midday/ui/icons";
+import { useGlobalTimerStatus } from "@/hooks/use-global-timer-status";
+import { secondsToHoursAndMinutes } from "@/utils/format";
 
 interface GlobalTimerIndicatorProps {
   className?: string;
@@ -31,7 +31,7 @@ export function GlobalTimerIndicator({ className }: GlobalTimerIndicatorProps) {
           />
           <span className="absolute -top-0.5 -right-0.5 h-2 w-2 bg-green-500 rounded-full animate-pulse" />
         </div>
-        <span className="font-mono text-green-700 dark:text-green-300">
+        <span className="text-green-700 dark:text-green-300">
           {secondsToHoursAndMinutes(elapsedTime)}
         </span>
         <span className="text-green-600 dark:text-green-400 truncate max-w-[120px]">

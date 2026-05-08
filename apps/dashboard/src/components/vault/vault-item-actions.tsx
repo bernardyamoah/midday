@@ -1,12 +1,15 @@
 "use client";
 
-import { downloadFile } from "@/lib/download";
-import { useTRPC } from "@/trpc/client";
+import { LogEvents } from "@midday/events/events";
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { useCopyToClipboard } from "usehooks-ts";
+import { useFileUrl } from "@/hooks/use-file-url";
+import { downloadFile } from "@/lib/download";
+import { useTRPC } from "@/trpc/client";
 import { DeleteVaultFileDialog } from "./delete-vault-file-dialog";
 
 type Props = {
@@ -19,10 +22,15 @@ export function VaultItemActions({ id, filePath, hideDelete }: Props) {
   const [, copy] = useCopyToClipboard();
   const [isCopied, setIsCopied] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const { track } = useOpenPanel();
   const trpc = useTRPC();
 
-  const downloadUrl = `/api/download/file?path=${filePath.join("/")}`;
   const fileName = filePath.at(-1);
+  const { url: downloadUrl } = useFileUrl({
+    type: "download",
+    filePath: filePath.join("/"),
+    filename: fileName,
+  });
 
   const shortLinkMutation = useMutation(
     trpc.shortLinks.createForDocument.mutationOptions({
@@ -30,6 +38,7 @@ export function VaultItemActions({ id, filePath, hideDelete }: Props) {
         setIsCopied(true);
       },
       onSuccess: (data) => {
+        track(LogEvents.VaultFileShared.name);
         if (data?.shortUrl) {
           copy(data.shortUrl);
 
@@ -48,11 +57,12 @@ export function VaultItemActions({ id, filePath, hideDelete }: Props) {
         size="icon"
         className="rounded-full size-7 bg-background"
         onClick={() => {
-          downloadFile(
-            `${downloadUrl}&filename=${fileName}`,
-            fileName || "download",
-          );
+          if (downloadUrl && fileName) {
+            track(LogEvents.VaultFileDownloaded.name);
+            downloadFile(downloadUrl, fileName);
+          }
         }}
+        disabled={!downloadUrl}
       >
         <Icons.ArrowCoolDown className="size-3.5" />
       </Button>

@@ -1,16 +1,17 @@
 "use client";
 
-import { AssistantModal } from "@/components/assistant/assistant-modal";
 import { ConnectTransactionsModal } from "@/components/modals/connect-transactions-modal";
 import { ImportModal } from "@/components/modals/import-modal";
 import { SelectBankAccountsModal } from "@/components/modals/select-bank-accounts";
-import { TrialEndedModal } from "@/components/modals/trial-ended-modal";
 import { SearchModal } from "@/components/search/search-modal";
+import { AppDetailSheet } from "@/components/sheets/app-detail-sheet";
 import { CategoryCreateSheet } from "@/components/sheets/category-create-sheet";
 import { CategoryEditSheet } from "@/components/sheets/category-edit-sheet";
 import { CustomerCreateSheet } from "@/components/sheets/customer-create-sheet";
+import { CustomerDetailsSheet } from "@/components/sheets/customer-details-sheet";
 import { CustomerEditSheet } from "@/components/sheets/customer-edit-sheet";
 import { DocumentSheet } from "@/components/sheets/document-sheet";
+import { EditRecurringSheet } from "@/components/sheets/edit-recurring-sheet";
 import { InboxDetailsSheet } from "@/components/sheets/inbox-details-sheet";
 import { InvoiceDetailsSheet } from "@/components/sheets/invoice-details-sheet";
 import { InvoiceSheet } from "@/components/sheets/invoice-sheet";
@@ -22,50 +23,43 @@ import { TrackerUpdateSheet } from "@/components/sheets/tracker-update-sheet";
 import { TransactionCreateSheet } from "@/components/sheets/transaction-create-sheet";
 import { TransactionEditSheet } from "@/components/sheets/transaction-edit-sheet";
 import { TransactionSheet } from "@/components/sheets/transaction-sheet";
-import { uniqueCurrencies } from "@midday/location/currencies";
-import { use } from "react";
 
-type Props = {
-  currencyPromise: Promise<string>;
-  countryCodePromise: Promise<string>;
-};
-
-export function GlobalSheets({ currencyPromise, countryCodePromise }: Props) {
-  const currency = use(currencyPromise);
-  const countryCode = use(countryCodePromise);
-
+export function GlobalSheets() {
   return (
     <>
-      <TrackerUpdateSheet defaultCurrency={currency} />
-      <TrackerCreateSheet defaultCurrency={currency} />
+      <TrackerUpdateSheet />
+      <TrackerCreateSheet />
       <TrackerScheduleSheet />
 
       <CategoryCreateSheet />
       <CategoryEditSheet />
 
       <CustomerCreateSheet />
+      <CustomerDetailsSheet />
       <CustomerEditSheet />
 
-      <ProductCreateSheet defaultCurrency={currency} />
-      <ProductEditSheet defaultCurrency={currency} />
+      <ProductCreateSheet />
+      <ProductEditSheet />
 
       <TransactionSheet />
       <TransactionCreateSheet />
       <TransactionEditSheet />
 
-      <AssistantModal />
       <SelectBankAccountsModal />
-      <TrialEndedModal />
+
       <SearchModal />
 
       <DocumentSheet />
       <InboxDetailsSheet />
 
-      <ImportModal currencies={uniqueCurrencies} defaultCurrency={currency} />
-      <ConnectTransactionsModal countryCode={countryCode} />
+      <ImportModal />
+      <ConnectTransactionsModal />
 
       <InvoiceDetailsSheet />
       <InvoiceSheet />
+      <EditRecurringSheet />
+
+      <AppDetailSheet />
     </>
   );
 }

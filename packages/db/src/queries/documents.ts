@@ -1,12 +1,12 @@
-import type { Database } from "@db/client";
-import {
-  documentTagAssignments,
-  documents,
-  transactionAttachments,
-} from "@db/schema";
 import { buildSearchQuery } from "@midday/db/utils/search-query";
 import { and, desc, eq, gte, inArray, like, lte, not, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
+import type { Database } from "../client";
+import {
+  documents,
+  documentTagAssignments,
+  transactionAttachments,
+} from "../schema";
 
 export type GetDocumentQueryParams = {
   teamId: string;
@@ -134,6 +134,7 @@ export async function getDocuments(db: Database, params: GetDocumentsParams) {
       metadata: true,
       pathTokens: true,
       processingStatus: true,
+      createdAt: true,
     },
     with: {
       documentTagAssignments: {
@@ -166,6 +167,60 @@ export type GetRelatedDocumentsParams = {
   pageSize: number;
   teamId: string;
 };
+
+export type GetRecentDocumentsParams = {
+  teamId: string;
+  limit?: number;
+};
+
+export async function getRecentDocuments(
+  db: Database,
+  params: GetRecentDocumentsParams,
+) {
+  const { teamId, limit = 5 } = params;
+
+  const data = await db.query.documents.findMany({
+    where: and(
+      eq(documents.teamId, teamId),
+      not(like(documents.name, "%.folderPlaceholder")),
+    ),
+    columns: {
+      id: true,
+      name: true,
+      title: true,
+      createdAt: true,
+      processingStatus: true,
+      tag: true,
+    },
+    with: {
+      documentTagAssignments: {
+        with: {
+          documentTag: {
+            columns: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+        },
+      },
+      user: {
+        columns: {
+          id: true,
+          fullName: true,
+          avatarUrl: true,
+        },
+      },
+    },
+    limit,
+    orderBy: desc(documents.createdAt),
+  });
+
+  return {
+    data,
+    total: data.length,
+  };
+}
 
 export type GetRelatedDocumentsResponse = {
   id: string;
@@ -226,7 +281,7 @@ export async function checkDocumentAttachments(
     )
     .limit(1);
 
-  if (!document[0] || !document[0].pathTokens) {
+  if (!document[0]?.pathTokens) {
     return { hasAttachments: false, attachments: [] };
   }
 

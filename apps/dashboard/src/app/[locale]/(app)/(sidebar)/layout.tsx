@@ -1,18 +1,16 @@
+import { redirect } from "next/navigation";
 import { ExportStatus } from "@/components/export-status";
 import { GlobalTimerProvider } from "@/components/global-timer-provider";
 import { Header } from "@/components/header";
-import { GlobalSheets } from "@/components/sheets/global-sheets";
+import { GlobalSheetsProvider } from "@/components/sheets/global-sheets-provider";
 import { Sidebar } from "@/components/sidebar";
 import { TimezoneDetector } from "@/components/timezone-detector";
 import {
-  HydrateClient,
   batchPrefetch,
   getQueryClient,
+  HydrateClient,
   trpc,
 } from "@/trpc/server";
-import { getCountryCode, getCurrency } from "@midday/location";
-import { redirect } from "next/navigation";
-import { Suspense } from "react";
 
 export default async function Layout({
   children,
@@ -20,8 +18,6 @@ export default async function Layout({
   children: React.ReactNode;
 }) {
   const queryClient = getQueryClient();
-  const currencyPromise = getCurrency();
-  const countryCodePromise = getCountryCode();
 
   // NOTE: These are used in the global sheets
   batchPrefetch([
@@ -30,20 +26,19 @@ export default async function Layout({
     trpc.search.global.queryOptions({ searchTerm: "" }),
   ]);
 
-  // NOTE: Right now we want to fetch the user and hydrate the client
-  // Next steps would be to prefetch and suspense
-  const user = await queryClient.fetchQuery(trpc.user.me.queryOptions());
+  // Fetch the user – .catch → redirect so a transient API failure
+  // (timeout, 5xx, expired session, etc.) doesn't crash the entire
+  // layout and blank the page.
+  const user = await queryClient
+    .fetchQuery(trpc.user.me.queryOptions())
+    .catch(() => redirect("/login"));
 
   if (!user) {
     redirect("/login");
   }
 
-  if (!user.fullName) {
-    redirect("/setup");
-  }
-
-  if (!user.teamId) {
-    redirect("/teams");
+  if (!user.fullName || !user.teamId) {
+    redirect("/onboarding");
   }
 
   return (
@@ -51,20 +46,13 @@ export default async function Layout({
       <div className="relative">
         <Sidebar />
 
-        <div className="md:ml-[70px] pb-8">
+        <div className="md:ml-[70px] pb-4">
           <Header />
-          <div className="px-6">{children}</div>
+          <div className="px-4 md:px-8">{children}</div>
         </div>
 
         <ExportStatus />
-
-        <Suspense>
-          <GlobalSheets
-            currencyPromise={currencyPromise}
-            countryCodePromise={countryCodePromise}
-          />
-        </Suspense>
-
+        <GlobalSheetsProvider />
         <GlobalTimerProvider />
         <TimezoneDetector />
       </div>

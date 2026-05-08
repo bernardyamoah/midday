@@ -15,7 +15,7 @@ import {
   updateInvoiceResponseSchema,
 } from "@api/schemas/invoice";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   deleteInvoice,
   draftInvoice,
@@ -23,6 +23,7 @@ import {
   getInvoiceById,
   getInvoiceSummary,
   getInvoices,
+  getInvoiceTemplate,
   getNextInvoiceNumber,
   getPaymentStatus,
   isInvoiceNumberUsed,
@@ -30,12 +31,14 @@ import {
 } from "@midday/db/queries";
 import { calculateTotal } from "@midday/invoice/calculate";
 import { transformCustomerToContent } from "@midday/invoice/utils";
-import type { GenerateInvoicePayload } from "@midday/jobs/schema";
-import { tasks } from "@trigger.dev/sdk";
-import { addMonths } from "date-fns";
+import { decodeJobId, getQueue, triggerJob } from "@midday/job-client";
+import { createLoggerWithContext } from "@midday/logger";
+import { addDays } from "date-fns";
 import { HTTPException } from "hono/http-exception";
 import { v4 as uuidv4 } from "uuid";
 import { withRequiredScope } from "../middleware";
+
+const logger = createLoggerWithContext("rest:invoices");
 
 const app = new OpenAPIHono<Context>();
 
@@ -117,28 +120,14 @@ app.openapi(
         return {
           ...invoiceWithoutToken,
           ...calculatedAmounts,
-          paymentDetails: invoice.paymentDetails
-            ? JSON.stringify(invoice.paymentDetails)
-            : null,
-          customerDetails: invoice.customerDetails
-            ? JSON.stringify(invoice.customerDetails)
-            : null,
-          fromDetails: invoice.fromDetails
-            ? JSON.stringify(invoice.fromDetails)
-            : null,
-          noteDetails: invoice.noteDetails
-            ? JSON.stringify(invoice.noteDetails)
-            : null,
-          topBlock: invoice.topBlock ? JSON.stringify(invoice.topBlock) : null,
-          bottomBlock: invoice.bottomBlock
-            ? JSON.stringify(invoice.bottomBlock)
-            : null,
-          pdfUrl: token
-            ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-            : null,
-          previewUrl: token
-            ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-            : null,
+          pdfUrl:
+            token && process.env.MIDDAY_DASHBOARD_URL
+              ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+              : null,
+          previewUrl:
+            token && process.env.MIDDAY_DASHBOARD_URL
+              ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+              : null,
         };
       }),
     };
@@ -152,6 +141,8 @@ app.openapi(
     method: "get",
     path: "/payment-status",
     summary: "Payment status",
+    operationId: "getInvoicePaymentStatus",
+    "x-speakeasy-name-override": "paymentStatus",
     description: "Get payment status for the authenticated team.",
     tags: ["Invoices"],
     responses: {
@@ -308,12 +299,14 @@ app.openapi(
       bottomBlock: result.bottomBlock
         ? JSON.stringify(result.bottomBlock)
         : null,
-      pdfUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-        : null,
-      previewUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-        : null,
+      pdfUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+          : null,
+      previewUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+          : null,
     };
 
     return c.json(validateResponse(response, invoiceResponseSchema));
@@ -332,6 +325,7 @@ app.openapi(
     tags: ["Invoices"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: draftInvoiceRequestSchema,
@@ -430,9 +424,15 @@ app.openapi(
       }
     }
 
+    // Get template for default payment terms
+    const template = await getInvoiceTemplate(db, teamId);
+    const paymentTermsDays = template?.paymentTermsDays ?? 30;
+
     // Set default dates if not provided
     const issueDate = input.issueDate || new Date().toISOString();
-    const dueDate = input.dueDate || addMonths(new Date(), 1).toISOString();
+    const dueDate =
+      input.dueDate ||
+      addDays(new Date(issueDate), paymentTermsDays).toISOString();
 
     // Fetch customer and generate customerDetails
     const customer = await getCustomerById(db, {
@@ -496,10 +496,14 @@ app.openapi(
       }
 
       // Trigger invoice generation (and sending if create_and_send)
-      await tasks.trigger("generate-invoice", {
-        invoiceId: result.id,
-        deliveryType: input.deliveryType,
-      } satisfies GenerateInvoicePayload);
+      await triggerJob(
+        "generate-invoice",
+        {
+          invoiceId: result.id,
+          deliveryType: input.deliveryType,
+        },
+        "invoices",
+      );
     } else if (input.deliveryType === "scheduled") {
       // Handle scheduled invoices
       if (!input.scheduledAt) {
@@ -518,17 +522,26 @@ app.openapi(
         });
       }
 
-      // Create a scheduled job
-      const scheduledRun = await tasks.trigger(
+      // Calculate delay in milliseconds from now
+      const delayMs = scheduledDate.getTime() - now.getTime();
+
+      // Create a scheduled job with delay
+      const scheduledRun = await triggerJob(
         "schedule-invoice",
         {
           invoiceId: result.id,
-          scheduledAt: input.scheduledAt,
         },
+        "invoices",
         {
-          delay: scheduledDate,
+          delay: delayMs,
         },
       );
+
+      if (!scheduledRun?.id) {
+        throw new HTTPException(500, {
+          message: "Failed to create scheduled job - no job ID returned",
+        });
+      }
 
       // Update the invoice with scheduling information
       const updatedInvoice = await updateInvoice(db, {
@@ -540,18 +553,43 @@ app.openapi(
         userId,
       });
 
-      if (updatedInvoice) {
-        finalResult = updatedInvoice;
+      if (!updatedInvoice) {
+        // Clean up the orphaned job before throwing
+        try {
+          const queue = getQueue("invoices");
+          const { jobId: rawJobId } = decodeJobId(scheduledRun.id);
+          const job = await queue.getJob(rawJobId);
+          if (job) {
+            await job.remove();
+          }
+        } catch {
+          // Best effort cleanup - log but don't fail on cleanup errors
+          logger.error("Failed to clean up orphaned scheduled job", {
+            jobId: scheduledRun.id,
+          });
+        }
+
+        throw new HTTPException(404, {
+          message: "Invoice not found",
+        });
       }
 
-      // Send notification
-      await tasks.trigger("notification", {
-        type: "invoice_scheduled",
-        teamId,
-        invoiceId: result.id,
-        invoiceNumber: finalResult.invoiceNumber,
-        scheduledAt: input.scheduledAt,
-        customerName: finalResult.customerName,
+      finalResult = updatedInvoice;
+
+      // Send notification (fire and forget)
+      triggerJob(
+        "notification",
+        {
+          type: "invoice_scheduled",
+          teamId,
+          invoiceId: result.id,
+          invoiceNumber: finalResult.invoiceNumber!,
+          scheduledAt: input.scheduledAt,
+          customerName: finalResult.customerName ?? undefined,
+        },
+        "notifications",
+      ).catch(() => {
+        // Ignore notification errors - invoice was scheduled successfully
       });
     }
 
@@ -575,12 +613,14 @@ app.openapi(
       bottomBlock: result.bottomBlock
         ? JSON.stringify(result.bottomBlock)
         : null,
-      pdfUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-        : null,
-      previewUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-        : null,
+      pdfUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+          : null,
+      previewUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+          : null,
     };
 
     return c.json(validateResponse(response, draftInvoiceResponseSchema), 201);
@@ -600,6 +640,7 @@ app.openapi(
     request: {
       params: getInvoiceByIdSchema.pick({ id: true }),
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateInvoiceRequestSchema,
@@ -626,18 +667,19 @@ app.openapi(
     const { id } = c.req.valid("param");
     const input = c.req.valid("json");
 
-    const result = await updateInvoice(db, {
+    await updateInvoice(db, {
       id,
       teamId,
       userId,
       ...input,
     });
 
+    const result = await getInvoiceById(db, { id, teamId });
+
     if (!result) {
       throw new HTTPException(404, { message: "Invoice not found" });
     }
 
-    // Add PDF download and preview URLs and serialize objects like tRPC does with superjson
     const { token, ...resultWithoutToken } = result;
     const response = {
       ...resultWithoutToken,
@@ -657,12 +699,14 @@ app.openapi(
       bottomBlock: result.bottomBlock
         ? JSON.stringify(result.bottomBlock)
         : null,
-      pdfUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
-        : null,
-      previewUrl: token
-        ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
-        : null,
+      pdfUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/api/download/invoice?token=${token}`
+          : null,
+      previewUrl:
+        token && process.env.MIDDAY_DASHBOARD_URL
+          ? `${process.env.MIDDAY_DASHBOARD_URL}/i/${token}`
+          : null,
     };
 
     return c.json(validateResponse(response, updateInvoiceResponseSchema));

@@ -1,15 +1,46 @@
 import { z } from "@hono/zod-openapi";
 
 export const getInboxSchema = z.object({
-  cursor: z.string().nullable().optional(),
-  order: z.string().nullable().optional(),
-  sort: z.string().nullable().optional(),
-  pageSize: z.coerce.number().min(1).max(100).optional(),
-  q: z.string().nullable().optional(),
-  status: z
-    .enum(["done", "pending", "suggested_match", "no_match"])
+  cursor: z
+    .string()
     .nullable()
-    .optional(),
+    .optional()
+    .describe("Pagination cursor from previous response"),
+  order: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Sort direction: asc or desc"),
+  sort: z
+    .string()
+    .nullable()
+    .optional()
+    .describe(
+      "Sort field. Valid values: alphabetical, document_date. Defaults to created date.",
+    ),
+  pageSize: z.coerce
+    .number()
+    .min(1)
+    .max(100)
+    .optional()
+    .describe("Number of items per page (1-100)"),
+  q: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("Search query to filter inbox items"),
+  status: z
+    .enum(["done", "pending", "suggested_match", "no_match", "other"])
+    .nullable()
+    .optional()
+    .describe(
+      "Filter by processing status: done (processed), pending (awaiting action), suggested_match (auto-matched), no_match (unmatched), other",
+    ),
+  tab: z
+    .enum(["all", "other"])
+    .nullable()
+    .optional()
+    .describe("Tab filter: all or other"),
 });
 
 export const inboxItemResponseSchema = z
@@ -149,6 +180,17 @@ export const deleteInboxSchema = z
     description: "Schema for deleting an inbox item by its ID.",
   });
 
+export const deleteInboxManySchema = z
+  .array(z.string().uuid())
+  .min(1)
+  .openapi({
+    description: "Schema for bulk deleting inbox items by their IDs.",
+    example: [
+      "b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4",
+      "a1b2c3d4-5678-4e7a-9c1a-2b7c1e24c2a4",
+    ],
+  });
+
 export const createInboxItemSchema = z.object({
   filename: z.string(),
   mimetype: z.string(),
@@ -161,6 +203,10 @@ export const processAttachmentsSchema = z.array(
     mimetype: z.string(),
     size: z.number(),
     filePath: z.array(z.string()),
+    referenceId: z.string().optional(),
+    website: z.string().optional(),
+    senderEmail: z.string().email().optional(),
+    inboxAccountId: z.string().uuid().optional(),
   }),
 );
 
@@ -187,6 +233,7 @@ export const updateInboxSchema = z.object({
       "deleted",
       "analyzing",
       "suggested_match",
+      "other",
     ])
     .optional(),
   displayName: z.string().optional(),
@@ -222,6 +269,7 @@ export const getInboxByStatusSchema = z.object({
       "no_match",
       "done",
       "deleted",
+      "other",
     ])
     .optional(),
 });
@@ -290,4 +338,63 @@ export const inboxPreSignedUrlResponseSchema = z.object({
     description: "Original filename of the inbox attachment",
     example: "invoice.pdf",
   }),
+});
+
+export const createInboxBlocklistSchema = z.object({
+  type: z.enum(["email", "domain"]).openapi({
+    description: "Type of blocklist entry - either 'email' or 'domain'",
+    example: "domain",
+  }),
+  value: z.string().openapi({
+    description: "The email address or domain to block",
+    example: "netflix.com",
+  }),
+});
+
+export const deleteInboxBlocklistSchema = z.object({
+  id: z
+    .string()
+    .uuid()
+    .openapi({
+      description: "The unique identifier of the blocklist entry to delete",
+      example: "b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4",
+      param: {
+        in: "path",
+        name: "id",
+      },
+    }),
+});
+
+export const getInboxBlocklistSchema = z.object({}).optional();
+
+export const inboxBlocklistItemResponseSchema = z
+  .object({
+    id: z.string().uuid().openapi({
+      description: "Blocklist entry ID (UUID)",
+      example: "b3b7c1e2-4c2a-4e7a-9c1a-2b7c1e24c2a4",
+    }),
+    teamId: z.string().uuid().openapi({
+      description: "Team ID this blocklist entry belongs to",
+      example: "a1b2c3d4-5678-4e7a-9c1a-2b7c1e24c2a4",
+    }),
+    type: z.enum(["email", "domain"]).openapi({
+      description: "Type of blocklist entry",
+      example: "domain",
+    }),
+    value: z.string().openapi({
+      description: "The blocked email address or domain",
+      example: "netflix.com",
+    }),
+    createdAt: z.string().openapi({
+      description:
+        "Date and time when the blocklist entry was created (ISO 8601)",
+      example: "2024-05-01T12:34:56.789Z",
+    }),
+  })
+  .openapi({
+    description: "Inbox blocklist entry object",
+  });
+
+export const inboxBlocklistResponseSchema = z.object({
+  entries: z.array(inboxBlocklistItemResponseSchema),
 });

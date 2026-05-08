@@ -1,5 +1,5 @@
-import { useI18n } from "@/locales/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
+import { LogEvents } from "@midday/events/events";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,13 +28,13 @@ import {
 } from "@midday/ui/select";
 import { useToast } from "@midday/ui/use-toast";
 import type { ColumnDef, FilterFn, Row } from "@tanstack/react-table";
-import { MoreHorizontal } from "lucide-react";
-import { Loader2 } from "lucide-react";
-import * as React from "react";
+import { Loader2, MoreHorizontal } from "lucide-react";
+import { useI18n } from "@/locales/client";
 import "@tanstack/react-table";
-import { useTRPC } from "@/trpc/client";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
+import { useTRPC } from "@/trpc/client";
 
 type TeamMember = RouterOutputs["team"]["members"][number];
 
@@ -90,12 +90,14 @@ export const columns: ColumnDef<TeamMember>[] = [
       const { toast } = useToast();
       const meta = table.options.meta;
       const trpc = useTRPC();
+      const { track } = useOpenPanel();
       const queryClient = useQueryClient();
       const router = useRouter();
 
       const deleteMemberMutation = useMutation(
         trpc.team.deleteMember.mutationOptions({
           onSuccess: () => {
+            track(LogEvents.MemberRemoved.name);
             queryClient.invalidateQueries({
               queryKey: trpc.team.members.queryKey(),
             });
@@ -137,7 +139,7 @@ export const columns: ColumnDef<TeamMember>[] = [
                 value={row.original.role ?? undefined}
                 onValueChange={(role) => {
                   updateMemberMutation.mutate({
-                    userId: row.original.user?.id!,
+                    userId: row.original.user!.id,
                     teamId: row.original.teamId!,
                     role: role as "owner" | "member",
                   });
@@ -191,7 +193,7 @@ export const columns: ColumnDef<TeamMember>[] = [
                             disabled={deleteMemberMutation.isPending}
                             onClick={() => {
                               deleteMemberMutation.mutate({
-                                userId: row.original.user?.id!,
+                                userId: row.original.user!.id,
                                 teamId: row.original.teamId!,
                               });
                             }}

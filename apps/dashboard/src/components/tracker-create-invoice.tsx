@@ -1,9 +1,7 @@
 "use client";
 
-import { useInvoiceParams } from "@/hooks/use-invoice-params";
-import { useUserQuery } from "@/hooks/use-user";
-import { useTRPC } from "@/trpc/client";
 import { TZDate } from "@date-fns/tz";
+import { LogEvents } from "@midday/events/events";
 import { Calendar } from "@midday/ui/calendar";
 import {
   DropdownMenuGroup,
@@ -21,19 +19,22 @@ import {
 } from "@midday/ui/select";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useToast } from "@midday/ui/use-toast";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   endOfMonth,
   endOfWeek,
   formatISO,
-  getDate,
   startOfMonth,
   startOfWeek,
   subMonths,
   subWeeks,
 } from "date-fns";
-import React, { useState } from "react";
+import { useState } from "react";
 import type { DateRange } from "react-day-picker";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { useUserQuery } from "@/hooks/use-user";
+import { useTRPC } from "@/trpc/client";
 
 type Props = {
   projectId: string;
@@ -89,6 +90,7 @@ const getPresetOptions = (weekStartsOnMonday: boolean): PresetOption[] => {
 export function TrackerCreateInvoice({ projectId }: Props) {
   const { setParams: setInvoiceParams } = useInvoiceParams();
   const { toast } = useToast();
+  const { track } = useOpenPanel();
   const { data: user } = useUserQuery();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -108,7 +110,8 @@ export function TrackerCreateInvoice({ projectId }: Props) {
   const createInvoiceFromTrackerMutation = useMutation(
     trpc.invoice.createFromTracker.mutationOptions({
       onSuccess: (data) => {
-        // Invalidate invoice queries
+        track(LogEvents.TrackerInvoiceCreated.name);
+
         queryClient.invalidateQueries({
           queryKey: trpc.invoice.get.infiniteQueryKey(),
         });
@@ -116,7 +119,7 @@ export function TrackerCreateInvoice({ projectId }: Props) {
         // Open the created invoice for editing
         if (data?.id) {
           setInvoiceParams({
-            type: "edit",
+            invoiceType: "edit",
             invoiceId: data.id,
           });
         }

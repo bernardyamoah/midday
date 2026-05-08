@@ -30,8 +30,8 @@ import {
   getInactiveClientsCount,
   getInvoiceById,
   getInvoiceSummary,
-  getInvoiceTemplate,
   getInvoices,
+  getInvoiceTemplate,
   getMostActiveClient,
   getNewCustomersCount,
   getNextInvoiceNumber,
@@ -44,57 +44,20 @@ import {
   searchInvoiceNumber,
   updateInvoice,
 } from "@midday/db/queries";
+import { DEFAULT_TEMPLATE } from "@midday/invoice";
 import { verify } from "@midday/invoice/token";
 import { transformCustomerToContent } from "@midday/invoice/utils";
-import type {
-  GenerateInvoicePayload,
-  SendInvoiceReminderPayload,
-} from "@midday/jobs/schema";
-import { runs, tasks } from "@trigger.dev/sdk";
+import { decodeJobId, getQueue, triggerJob } from "@midday/job-client";
+import { createLoggerWithContext } from "@midday/logger";
 import { TRPCError } from "@trpc/server";
-import { addMonths, format, parseISO } from "date-fns";
+import { addDays, format, parseISO } from "date-fns";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 
-const defaultTemplate = {
-  title: "Invoice",
-  customerLabel: "To",
-  fromLabel: "From",
-  invoiceNoLabel: "Invoice No",
-  issueDateLabel: "Issue Date",
-  dueDateLabel: "Due Date",
-  descriptionLabel: "Description",
-  priceLabel: "Price",
-  quantityLabel: "Quantity",
-  totalLabel: "Total",
-  totalSummaryLabel: "Total",
-  subtotalLabel: "Subtotal",
-  vatLabel: "VAT",
-  taxLabel: "Tax",
-  paymentLabel: "Payment Details",
-  paymentDetails: undefined,
-  noteLabel: "Note",
-  noteDetails: undefined,
-  logoUrl: undefined,
-  currency: "USD",
-  fromDetails: undefined,
-  size: "a4",
-  includeVat: true,
-  includeTax: true,
-  discountLabel: "Discount",
-  includeDiscount: false,
-  includeUnits: false,
-  includeDecimals: false,
-  includePdf: false,
-  sendCopy: false,
-  includeQr: true,
-  dateFormat: "dd/MM/yyyy",
-  taxRate: 0,
-  vatRate: 0,
-  deliveryType: "create",
-  timezone: undefined,
-  locale: undefined,
-};
+const logger = createLoggerWithContext("trpc:invoice");
+
+// Use the shared default template from @midday/invoice
+const defaultTemplate = DEFAULT_TEMPLATE;
 
 export const invoiceRouter = createTRPCRouter({
   get: protectedProcedure
@@ -118,9 +81,16 @@ export const invoiceRouter = createTRPCRouter({
   getInvoiceByToken: publicProcedure
     .input(getInvoiceByTokenSchema)
     .query(async ({ input, ctx: { db } }) => {
-      const { id } = (await verify(decodeURIComponent(input.token))) as {
-        id: string;
-      };
+      let id: string | undefined;
+
+      try {
+        const payload = (await verify(decodeURIComponent(input.token))) as {
+          id?: string;
+        };
+        id = payload.id;
+      } catch {
+        throw new TRPCError({ code: "NOT_FOUND" });
+      }
 
       if (!id) {
         throw new TRPCError({ code: "NOT_FOUND" });
@@ -225,7 +195,7 @@ export const invoiceRouter = createTRPCRouter({
                 teamId: teamId!,
               })
             : null,
-          getUserById(db, session?.user.id!),
+          getUserById(db, session.user.id),
         ]);
 
       const invoiceId = uuidv4();
@@ -269,7 +239,7 @@ export const invoiceRouter = createTRPCRouter({
       const invoiceData = {
         id: invoiceId,
         teamId: teamId!,
-        userId: session?.user.id!,
+        userId: session.user.id,
         customerId: projectData.customerId,
         customerName: fullCustomer?.name,
         invoiceNumber: nextInvoiceNumber,
@@ -284,7 +254,10 @@ export const invoiceRouter = createTRPCRouter({
           },
         ],
         issueDate: new Date().toISOString(),
-        dueDate: addMonths(new Date(), 1).toISOString(),
+        dueDate: addDays(
+          new Date(),
+          template?.paymentTermsDays ?? 30,
+        ).toISOString(),
         template: templateData,
         fromDetails: (template?.fromDetails || null) as string | null,
         paymentDetails: (template?.paymentDetails || null) as string | null,
@@ -310,7 +283,7 @@ export const invoiceRouter = createTRPCRouter({
         getNextInvoiceNumber(db, teamId!),
         getInvoiceTemplate(db, teamId!),
         getTeamById(db, teamId!),
-        getUserById(db, session?.user.id!),
+        getUserById(db, session.user.id),
       ]);
 
       const locale = user?.locale ?? geo?.locale ?? "en";
@@ -331,6 +304,9 @@ export const invoiceRouter = createTRPCRouter({
       );
 
       const savedTemplate = {
+        id: template?.id,
+        name: template?.name ?? "Default",
+        isDefault: template?.isDefault ?? true,
         title: template?.title ?? defaultTemplate.title,
         logoUrl,
         currency,
@@ -343,6 +319,10 @@ export const invoiceRouter = createTRPCRouter({
           template?.includeDecimals ?? defaultTemplate.includeDecimals,
         includeUnits: template?.includeUnits ?? defaultTemplate.includeUnits,
         includeQr: template?.includeQr ?? defaultTemplate.includeQr,
+        includeLineItemTax:
+          template?.includeLineItemTax ?? defaultTemplate.includeLineItemTax,
+        lineItemTaxLabel:
+          template?.lineItemTaxLabel ?? defaultTemplate.lineItemTaxLabel,
         includePdf: template?.includePdf ?? defaultTemplate.includePdf,
         sendCopy: template?.sendCopy ?? defaultTemplate.sendCopy,
         customerLabel: template?.customerLabel ?? defaultTemplate.customerLabel,
@@ -375,7 +355,17 @@ export const invoiceRouter = createTRPCRouter({
         noteDetails: template?.noteDetails ?? defaultTemplate.noteDetails,
         timezone,
         locale,
+        paymentEnabled:
+          template?.paymentEnabled ?? defaultTemplate.paymentEnabled,
+        paymentTermsDays: template?.paymentTermsDays ?? 30,
+        emailSubject: template?.emailSubject ?? null,
+        emailHeading: template?.emailHeading ?? null,
+        emailBody: template?.emailBody ?? null,
+        emailButtonText: template?.emailButtonText ?? null,
       };
+
+      // Calculate due date based on payment terms (default 30 days)
+      const paymentTermsDays = savedTemplate.paymentTermsDays ?? 30;
 
       return {
         // Default values first
@@ -400,7 +390,7 @@ export const invoiceRouter = createTRPCRouter({
         noteDetails: savedTemplate.noteDetails,
         customerId: undefined,
         issueDate: new UTCDate().toISOString(),
-        dueDate: addMonths(new UTCDate(), 1).toISOString(),
+        dueDate: addDays(new UTCDate(), paymentTermsDays).toISOString(),
         lineItems: [{ name: "", quantity: 0, price: 0, vat: 0 }],
         tax: undefined,
         token: undefined,
@@ -447,7 +437,7 @@ export const invoiceRouter = createTRPCRouter({
         ...input,
         invoiceNumber,
         teamId: teamId!,
-        userId: session?.user.id!,
+        userId: session.user.id,
         paymentDetails: parseInputValue(input.paymentDetails),
         fromDetails: parseInputValue(input.fromDetails),
         customerDetails: parseInputValue(input.customerDetails),
@@ -487,32 +477,47 @@ export const invoiceRouter = createTRPCRouter({
         let scheduledJobId: string | null = null;
 
         try {
-          if (existingInvoice?.scheduledJobId) {
-            // Reschedule the existing job instead of creating a new one
-            await runs.reschedule(existingInvoice.scheduledJobId, {
-              delay: scheduledDate,
-            });
-            scheduledJobId = existingInvoice.scheduledJobId;
-          } else {
-            // Create a new scheduled job
-            const scheduledRun = await tasks.trigger(
-              "schedule-invoice",
-              {
-                invoiceId: input.id,
-                scheduledAt: input.scheduledAt,
-              },
-              {
-                delay: scheduledDate,
-              },
+          // Calculate delay in milliseconds from now
+          const delayMs = scheduledDate.getTime() - now.getTime();
+
+          // Create the new scheduled job FIRST to ensure we don't lose the job if creation fails
+          const scheduledRun = await triggerJob(
+            "schedule-invoice",
+            {
+              invoiceId: input.id,
+            },
+            "invoices",
+            {
+              delay: delayMs,
+            },
+          );
+
+          if (!scheduledRun?.id) {
+            throw new Error(
+              "Failed to create scheduled job - no job ID returned",
             );
+          }
 
-            if (!scheduledRun?.id) {
-              throw new Error(
-                "Failed to create scheduled job - no job ID returned",
-              );
+          scheduledJobId = scheduledRun.id;
+
+          // Only remove the old job AFTER successfully creating the new one
+          // This ensures we never lose the scheduled job even if there are transient failures
+          if (existingInvoice?.scheduledJobId) {
+            const queue = getQueue("invoices");
+            // Decode composite ID (format: "invoices:123") to get raw job ID for BullMQ
+            const { jobId: rawJobId } = decodeJobId(
+              existingInvoice.scheduledJobId,
+            );
+            const existingJob = await queue.getJob(rawJobId);
+            if (existingJob) {
+              await existingJob.remove().catch((err) => {
+                // Log but don't fail - the old job will eventually be cleaned up or run (harmlessly)
+                // since we've already created the new job and will update the invoice
+                logger.error("Failed to remove old scheduled job", {
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              });
             }
-
-            scheduledJobId = scheduledRun.id;
           }
         } catch (error) {
           throw new TRPCError({
@@ -538,19 +543,40 @@ export const invoiceRouter = createTRPCRouter({
         });
 
         if (!data) {
+          // Clean up the orphaned job before throwing
+          try {
+            const queue = getQueue("invoices");
+            const { jobId: rawJobId } = decodeJobId(scheduledJobId);
+            const job = await queue.getJob(rawJobId);
+            if (job) {
+              await job.remove();
+            }
+          } catch (err) {
+            logger.error("Failed to clean up orphaned scheduled job", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Invoice not found",
           });
         }
 
-        tasks.trigger("notification", {
-          type: "invoice_scheduled",
-          teamId: teamId!,
-          invoiceId: input.id,
-          invoiceNumber: data.invoiceNumber,
-          scheduledAt: input.scheduledAt,
-          customerName: data.customerName,
+        // Fire and forget notification - don't block the response
+        triggerJob(
+          "notification",
+          {
+            type: "invoice_scheduled",
+            teamId: teamId!,
+            invoiceId: input.id,
+            invoiceNumber: data.invoiceNumber!,
+            scheduledAt: input.scheduledAt,
+            customerName: data.customerName ?? undefined,
+          },
+          "notifications",
+        ).catch(() => {
+          // Ignore notification errors - invoice was scheduled successfully
         });
 
         return data;
@@ -570,10 +596,14 @@ export const invoiceRouter = createTRPCRouter({
         });
       }
 
-      await tasks.trigger("generate-invoice", {
-        invoiceId: data.id,
-        deliveryType: input.deliveryType,
-      } satisfies GenerateInvoicePayload);
+      await triggerJob(
+        "generate-invoice",
+        {
+          invoiceId: data.id,
+          deliveryType: input.deliveryType,
+        },
+        "invoices",
+      );
 
       return data;
     }),
@@ -581,9 +611,13 @@ export const invoiceRouter = createTRPCRouter({
   remind: protectedProcedure
     .input(remindInvoiceSchema)
     .mutation(async ({ input, ctx: { db, teamId } }) => {
-      await tasks.trigger("send-invoice-reminder", {
-        invoiceId: input.id,
-      } satisfies SendInvoiceReminderPayload);
+      await triggerJob(
+        "send-invoice-reminder",
+        {
+          invoiceId: input.id,
+        },
+        "invoices",
+      );
 
       return updateInvoice(db, {
         id: input.id,
@@ -599,7 +633,7 @@ export const invoiceRouter = createTRPCRouter({
 
       return duplicateInvoice(db, {
         id: input.id,
-        userId: session?.user.id!,
+        userId: session.user.id,
         invoiceNumber: nextInvoiceNumber!,
         teamId: teamId!,
       });
@@ -614,7 +648,7 @@ export const invoiceRouter = createTRPCRouter({
         teamId: teamId!,
       });
 
-      if (!invoice || !invoice.scheduledJobId) {
+      if (!invoice?.scheduledJobId) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Scheduled invoice not found",
@@ -632,17 +666,70 @@ export const invoiceRouter = createTRPCRouter({
         });
       }
 
-      // Reschedule the existing job with the new date
-      await runs.reschedule(invoice.scheduledJobId, {
-        delay: scheduledDate,
-      });
+      // Calculate new delay
+      const delayMs = scheduledDate.getTime() - now.getTime();
 
-      // Update the scheduled date in the database
+      // Create new scheduled job FIRST to ensure we don't lose the job if creation fails
+      const scheduledRun = await triggerJob(
+        "schedule-invoice",
+        {
+          invoiceId: input.id,
+        },
+        "invoices",
+        {
+          delay: delayMs,
+        },
+      );
+
+      if (!scheduledRun?.id) {
+        throw new TRPCError({
+          code: "SERVICE_UNAVAILABLE",
+          message: "Failed to create scheduled job",
+        });
+      }
+
+      // Update the scheduled date and job ID in the database
       const updatedInvoice = await updateInvoice(db, {
         id: input.id,
         scheduledAt: input.scheduledAt,
+        scheduledJobId: scheduledRun.id,
         teamId: teamId!,
       });
+
+      if (!updatedInvoice) {
+        // Database update failed - clean up the newly created job to avoid orphans
+        const queue = getQueue("invoices");
+        const { jobId: newRawJobId } = decodeJobId(scheduledRun.id);
+        const newJob = await queue.getJob(newRawJobId);
+        if (newJob) {
+          await newJob.remove().catch((err) => {
+            logger.error("Failed to clean up orphaned scheduled job", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Invoice not found or update failed",
+        });
+      }
+
+      // Only remove the old job AFTER successfully creating the new one and updating the database
+      // This ensures we never lose the scheduled job even if there are transient failures
+      const queue = getQueue("invoices");
+      // Decode composite ID (format: "invoices:123") to get raw job ID for BullMQ
+      const { jobId: rawJobId } = decodeJobId(invoice.scheduledJobId);
+      const existingJob = await queue.getJob(rawJobId);
+      if (existingJob) {
+        await existingJob.remove().catch((err) => {
+          // Log but don't fail - the old job will be detected as stale by the processor
+          // since it verifies job.id matches invoice.scheduledJobId before processing
+          logger.error("Failed to remove old scheduled job", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
 
       return updatedInvoice;
     }),
@@ -664,8 +751,14 @@ export const invoiceRouter = createTRPCRouter({
       }
 
       if (invoice.scheduledJobId) {
-        // Cancel the scheduled job
-        await runs.cancel(invoice.scheduledJobId);
+        // Cancel the scheduled job by removing it from the queue
+        const queue = getQueue("invoices");
+        // Decode composite ID (format: "invoices:123") to get raw job ID for BullMQ
+        const { jobId: rawJobId } = decodeJobId(invoice.scheduledJobId);
+        const job = await queue.getJob(rawJobId);
+        if (job) {
+          await job.remove();
+        }
       }
 
       // Update the invoice status back to draft and clear scheduling fields

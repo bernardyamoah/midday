@@ -1,12 +1,5 @@
 "use client";
 
-import { InputColor } from "@/components/input-color";
-import { SelectParentCategory } from "@/components/select-parent-category";
-import { SelectTaxType } from "@/components/select-tax-type";
-import { TaxRateInput } from "@/components/tax-rate-input";
-import { useCategoryParams } from "@/hooks/use-category-params";
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useTRPC } from "@/trpc/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import {
   Form,
@@ -22,7 +15,15 @@ import { Switch } from "@midday/ui/switch";
 import { taxTypes } from "@midday/utils/tax";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { InputColor } from "@/components/input-color";
+import { SelectParentCategory } from "@/components/select-parent-category";
+import { SelectTaxType } from "@/components/select-tax-type";
+import { TaxRateInput } from "@/components/tax-rate-input";
+import { useCategoryParams } from "@/hooks/use-category-params";
+import { useInvalidateTransactionQueries } from "@/hooks/use-invalidate-transaction-queries";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
   id: z.string().uuid(),
@@ -46,13 +47,14 @@ export function CategoryEditForm({ data }: Props) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { setParams } = useCategoryParams();
+  const invalidateTransactionQueries = useInvalidateTransactionQueries();
 
   const defaultValues = {
     id: data?.id,
     name: data?.name || "",
     description: data?.description || "",
     color: data?.color || "",
-    taxRate: data?.taxRate || undefined,
+    taxRate: data?.taxRate ?? undefined,
     taxType: data?.taxType || "",
     taxReportingCode: data?.taxReportingCode || "",
     excluded: data?.excluded || false,
@@ -69,16 +71,23 @@ export function CategoryEditForm({ data }: Props) {
 
   const updateCategoryMutation = useMutation(
     trpc.transactionCategories.update.mutationOptions({
-      onSuccess: () => {
-        // Invalidate the list query
+      onSuccess: (_, variables) => {
+        // Always invalidate category queries
         queryClient.invalidateQueries({
           queryKey: trpc.transactionCategories.get.queryKey(),
         });
 
-        // Invalidate the specific category query to refetch updated data
         queryClient.invalidateQueries({
           queryKey: trpc.transactionCategories.getById.queryKey(),
         });
+
+        // Check if excluded or taxRate changed (affects calculations)
+        const excludedChanged = data?.excluded !== variables.excluded;
+        const taxRateChanged = data?.taxRate !== variables.taxRate;
+
+        if (excludedChanged || taxRateChanged) {
+          invalidateTransactionQueries();
+        }
 
         setParams(null);
       },
@@ -101,10 +110,10 @@ export function CategoryEditForm({ data }: Props) {
       name: values.name,
       description: values.description || null,
       color: values.color || null,
-      taxRate: values.taxRate || null,
+      taxRate: values.taxRate ?? null,
       taxType: values.taxType || null,
       taxReportingCode: values.taxReportingCode || null,
-      excluded: values.excluded || null,
+      excluded: values.excluded ?? null,
     };
 
     // Only include parentId if it has changed from the original value
@@ -221,6 +230,9 @@ export function CategoryEditForm({ data }: Props) {
                       value={field.value || ""}
                     />
                   </FormControl>
+                  <p className="text-xs text-muted-foreground pt-1">
+                    Maps to account codes when exporting to accounting software
+                  </p>
                 </FormItem>
               )}
             />
@@ -296,7 +308,7 @@ export function CategoryEditForm({ data }: Props) {
                   <div className="flex items-center justify-between space-x-2">
                     <div className="space-y-0.5">
                       <FormLabel className="text-xs text-[#878787] font-normal">
-                        Exclude from Reports
+                        Exclude from reports
                       </FormLabel>
                       <div className="text-xs text-muted-foreground">
                         Transactions in this category won't appear in financial

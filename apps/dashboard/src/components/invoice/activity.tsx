@@ -1,10 +1,9 @@
 "use client";
 
-import { useUserQuery } from "@/hooks/use-user";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { cn } from "@midday/ui/cn";
 import { format } from "date-fns";
-import React from "react";
+import { useUserQuery } from "@/hooks/use-user";
 
 type ActivityItemProps = {
   label: string;
@@ -111,9 +110,19 @@ export function InvoiceActivity({ data }: Props) {
 
       {data?.status !== "canceled" && (
         <ActivityItem
-          label="Paid"
+          label={data?.paymentIntentId ? "Paid with Stripe" : "Paid"}
           date={data?.paidAt}
           completed={completed}
+          isLast={!data?.refundedAt}
+          timeFormat={user?.timeFormat}
+        />
+      )}
+
+      {data?.refundedAt && (
+        <ActivityItem
+          label="Refunded"
+          date={data?.refundedAt}
+          completed
           isLast
           timeFormat={user?.timeFormat}
         />

@@ -1,7 +1,9 @@
 "use client";
 
-import { useUserQuery } from "@/hooks/use-user";
 import NumberFlow from "@number-flow/react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
+import { useTRPC } from "@/trpc/client";
 
 type Props = {
   value: number;
@@ -18,12 +20,26 @@ export function AnimatedNumber({
   maximumFractionDigits,
   locale,
 }: Props) {
-  const { data: user } = useUserQuery();
+  const trpc = useTRPC();
+  const hasReceivedValue = useRef(false);
+
+  useEffect(() => {
+    if (value !== 0) {
+      hasReceivedValue.current = true;
+    }
+  }, [value]);
+
+  const { data: user } = useQuery({
+    ...trpc.user.me.queryOptions(),
+    retry: false,
+    throwOnError: false,
+  });
   const localeToUse = locale || user?.locale;
 
   return (
     <NumberFlow
       value={value}
+      animated={hasReceivedValue.current}
       format={{
         style: "currency",
         currency: currency ?? "USD",

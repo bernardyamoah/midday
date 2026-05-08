@@ -5,7 +5,8 @@
   "scripts": {
     "clean": "rm -rf .turbo node_modules",
     "lint": "biome check .",
-    "format": "biome format --write .",
+    "lint:fix": "biome check --write .",
+    "test": "bun test --exit src",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
@@ -20,17 +21,19 @@
     "./format-to-html": "./src/templates/html/format.tsx",
     "./content": "./src/utils/content.ts",
     "./types": "./src/types.ts",
-    "./utils": "./src/utils/transform.ts"
+    "./utils": "./src/utils/transform.ts",
+    "./currency": "./src/utils/currency.ts",
+    "./recurring": "./src/utils/recurring.ts"
   },
   "dependencies": {
     "@midday/ui": "workspace:*",
     "@midday/utils": "workspace:*",
-    "@react-pdf/renderer": "^4.3.0",
-    "date-fns": "^4.1.0",
-    "jose": "^6.0.11",
+    "@react-pdf/renderer": "catalog:",
+    "date-fns": "catalog:",
+    "jose": "catalog:",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@types/qrcode": "^1.5.5"
+    "@types/qrcode": "^1.5.6"
   }
 }

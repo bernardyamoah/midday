@@ -11,8 +11,20 @@ export type TransactionFilters = {
   amount_range?: number[] | null;
   amount?: string[] | null;
   recurring?: ("all" | "weekly" | "monthly" | "annually")[] | null;
-  statuses?: ("completed" | "uncompleted" | "archived" | "excluded")[] | null;
+  statuses?:
+    | (
+        | "blank"
+        | "receipt_match"
+        | "in_review"
+        | "export_error"
+        | "archived"
+        | "excluded"
+        | "exported"
+      )[]
+    | null;
   manual?: "include" | "exclude" | null;
+  /** Type filter: "income" for deposits/refunds, "expense" for purchases/charges */
+  type?: "income" | "expense" | null;
 };
 
 // Generic filter state type
@@ -41,6 +53,7 @@ export const EMPTY_FILTER_STATE: TransactionFilters = {
   recurring: null,
   statuses: null,
   manual: null,
+  type: null,
 };
 
 /**

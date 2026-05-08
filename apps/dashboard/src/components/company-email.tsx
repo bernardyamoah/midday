@@ -1,7 +1,5 @@
 "use client";
 
-import { useTeamMutation, useTeamQuery } from "@/hooks/use-team";
-import { useZodForm } from "@/hooks/use-zod-form";
 import {
   Card,
   CardContent,
@@ -19,8 +17,9 @@ import {
 } from "@midday/ui/form";
 import { Input } from "@midday/ui/input";
 import { SubmitButton } from "@midday/ui/submit-button";
-import { z } from "zod";
-import { CountrySelector } from "./country-selector";
+import { z } from "zod/v3";
+import { useTeamMutation, useTeamQuery } from "@/hooks/use-team";
+import { useZodForm } from "@/hooks/use-zod-form";
 
 const formSchema = z.object({
   email: z.string().email(),

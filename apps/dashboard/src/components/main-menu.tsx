@@ -8,6 +8,7 @@ import { useEffect, useState } from "react";
 
 const icons = {
   "/": () => <Icons.Overview size={20} />,
+  "/reports": () => <Icons.Monitoring size={20} />,
   "/transactions": () => <Icons.Transactions size={20} />,
   "/invoices": () => <Icons.Invoice size={20} />,
   "/tracker": () => <Icons.Tracker size={20} />,
@@ -24,9 +25,8 @@ const items = [
     name: "Overview",
   },
   {
-    path: "/inbox",
-    name: "Inbox",
-    children: [{ path: "/inbox/settings", name: "Settings" }],
+    path: "/reports",
+    name: "Reports",
   },
   {
     path: "/transactions",
@@ -48,11 +48,16 @@ const items = [
     ],
   },
   {
+    path: "/inbox",
+    name: "Inbox",
+    children: [{ path: "/inbox/settings", name: "Settings" }],
+  },
+  {
     path: "/invoices",
     name: "Invoices",
     children: [
       { path: "/invoices/products", name: "Products" },
-      { path: "/invoices?type=create", name: "Create new" },
+      { path: "/invoices?invoiceType=create", name: "Create new" },
     ],
   },
   {
@@ -123,8 +128,8 @@ const ChildItem = ({
 
   return (
     <Link
-      prefetch
       href={child.path}
+      prefetch
       onClick={() => onSelect?.()}
       className="block group/child"
     >
@@ -133,7 +138,7 @@ const ChildItem = ({
         <div
           className={cn(
             "ml-[35px] mr-[15px] h-[32px] flex items-center",
-            "border-l border-[#DCDAD2] dark:border-[#2C2C2C] pl-3",
+            "border-l border-[#e6e6e6] dark:border-[#1d1d1d] pl-3",
             "transition-all duration-200 ease-out",
             showChild
               ? "opacity-100 translate-x-0"
@@ -185,8 +190,8 @@ const Item = ({
   return (
     <div className="group">
       <Link
-        prefetch
         href={item.path}
+        prefetch
         onClick={() => onSelect?.()}
         className="group"
       >
@@ -196,7 +201,7 @@ const Item = ({
             className={cn(
               "border border-transparent h-[40px] transition-all duration-200 ease-&lsqb;cubic-bezier(0.4,0,0.2,1)&rsqb; ml-[15px] mr-[15px]",
               isActive &&
-                "bg-[#F2F1EF] dark:bg-secondary border-[#DCDAD2] dark:border-[#2C2C2C]",
+                "bg-[#f7f7f7] dark:bg-[#131313] border-[#e6e6e6] dark:border-[#1d1d1d]",
               isExpanded ? "w-[calc(100%-30px)]" : "w-[40px]",
             )}
           />
@@ -283,7 +288,7 @@ export function MainMenu({ onSelect, isExpanded = false }: Props) {
   }, [isExpanded]);
 
   return (
-    <div className="mt-6 w-full">
+    <div className="mt-4 w-full">
       <nav className="w-full">
         <div className="flex flex-col gap-2">
           {items.map((item) => {

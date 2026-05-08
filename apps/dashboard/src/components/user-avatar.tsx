@@ -1,6 +1,5 @@
 "use client";
 
-import { useUserQuery } from "@/hooks/use-user";
 import {
   Card,
   CardDescription,
@@ -8,6 +7,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@midday/ui/card";
+import { useUserQuery } from "@/hooks/use-user";
 import { AvatarUpload } from "./avatar-upload";
 
 export function UserAvatar() {
@@ -24,7 +24,7 @@ export function UserAvatar() {
           </CardDescription>
         </CardHeader>
 
-        <AvatarUpload userId={user?.id!} avatarUrl={user?.avatarUrl} />
+        <AvatarUpload userId={user!.id} avatarUrl={user?.avatarUrl} />
       </div>
       <CardFooter>An avatar is optional but strongly recommended.</CardFooter>
     </Card>

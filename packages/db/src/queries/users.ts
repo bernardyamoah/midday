@@ -1,6 +1,6 @@
-import type { Database } from "@db/client";
-import { teams, users, usersOnTeam } from "@db/schema";
-import { eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import type { Database } from "../client";
+import { teams, users, usersOnTeam } from "../schema";
 
 export const getUserById = async (db: Database, id: string) => {
   const [result] = await db
@@ -20,11 +20,14 @@ export const getUserById = async (db: Database, id: string) => {
         id: teams.id,
         name: teams.name,
         logoUrl: teams.logoUrl,
+        email: teams.email,
         plan: teams.plan,
+        subscriptionStatus: teams.subscriptionStatus,
         inboxId: teams.inboxId,
         createdAt: teams.createdAt,
         countryCode: teams.countryCode,
         canceledAt: teams.canceledAt,
+        baseCurrency: teams.baseCurrency,
       },
     })
     .from(users)
@@ -37,7 +40,6 @@ export const getUserById = async (db: Database, id: string) => {
 export type UpdateUserParams = {
   id: string;
   fullName?: string | null;
-  teamId?: string | null;
   email?: string | null;
   avatarUrl?: string | null;
   locale?: string | null;
@@ -70,6 +72,45 @@ export const updateUser = async (db: Database, data: UpdateUserParams) => {
     });
 
   return result;
+};
+
+/**
+ * Switch a user's active team. Validates membership in usersOnTeam
+ * to prevent unauthorized team access.
+ */
+export const switchUserTeam = async (
+  db: Database,
+  params: { userId: string; teamId: string },
+) => {
+  const { userId, teamId } = params;
+
+  // Get the user's current teamId so we can invalidate its cache entry
+  const currentUser = await db.query.users.findFirst({
+    columns: { teamId: true },
+    where: eq(users.id, userId),
+  });
+
+  // Verify the user is a member of the target team
+  const [membership] = await db
+    .select({ id: usersOnTeam.id })
+    .from(usersOnTeam)
+    .where(and(eq(usersOnTeam.userId, userId), eq(usersOnTeam.teamId, teamId)))
+    .limit(1);
+
+  if (!membership) {
+    throw new Error("User is not a member of the target team");
+  }
+
+  const [result] = await db
+    .update(users)
+    .set({ teamId })
+    .where(eq(users.id, userId))
+    .returning({
+      id: users.id,
+      teamId: users.teamId,
+    });
+
+  return { ...result, previousTeamId: currentUser?.teamId ?? null };
 };
 
 export const getUserTeamId = async (db: Database, userId: string) => {

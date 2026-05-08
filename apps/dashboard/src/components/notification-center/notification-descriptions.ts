@@ -1,6 +1,7 @@
-import type { useI18n } from "@/locales/client";
+import { getFrequencyShortLabel } from "@midday/invoice/recurring";
 import { formatAmount } from "@midday/utils/format";
 import { format } from "date-fns";
+import type { useI18n } from "@/locales/client";
 
 type UseI18nReturn = ReturnType<typeof useI18n>;
 
@@ -27,7 +28,6 @@ const handleTransactionsCreated: NotificationDescriptionHandler = (
   const count = metadata?.count || metadata?.transactionCount || 1;
   const transaction = metadata?.transaction;
 
-  // For single transactions, show rich details
   if (count === 1 && transaction) {
     const formattedAmount =
       formatAmount({
@@ -36,34 +36,27 @@ const handleTransactionsCreated: NotificationDescriptionHandler = (
         locale: user?.locale || "en-US",
       }) || `${transaction.amount} ${transaction.currency}`;
 
-    const userDateFormat = user?.dateFormat || "dd/MM/yyyy";
-    const formattedDate = format(new Date(transaction.date), userDateFormat);
-
     return t("notifications.transactions_created.single_transaction", {
       name: transaction.name,
       amount: formattedAmount,
-      date: formattedDate,
     });
   }
 
-  // For multiple transactions, use count-based messages
   if (count <= 5) {
     return t("notifications.transactions_created.title", { count });
   }
   return t("notifications.transactions_created.title_many", { count });
 };
 
-const handleInboxNew: NotificationDescriptionHandler = (metadata, user, t) => {
+const handleInboxNew: NotificationDescriptionHandler = (metadata, _user, t) => {
   const count = metadata?.totalCount || 1;
   const type = metadata?.type;
-  const provider = metadata?.provider ?? "";
 
   switch (type) {
     case "email":
       return t("notifications.inbox_new.type.email", { count });
     case "sync":
-      // @ts-expect-error
-      return t("notifications.inbox_new.type.sync", { count, provider });
+      return t("notifications.inbox_new.type.sync", { count });
     case "slack":
       return t("notifications.inbox_new.type.slack", { count });
     case "upload":
@@ -112,6 +105,12 @@ const handleInvoicePaid: NotificationDescriptionHandler = (
         });
   }
 
+  if (invoiceNumber && customerName) {
+    return t("notifications.invoice_paid.automatic_with_customer", {
+      invoiceNumber,
+      customerName,
+    });
+  }
   return invoiceNumber
     ? t("notifications.invoice_paid.automatic", { invoiceNumber })
     : t("notifications.invoice_paid.title");
@@ -119,10 +118,18 @@ const handleInvoicePaid: NotificationDescriptionHandler = (
 
 const handleInvoiceOverdue: NotificationDescriptionHandler = (
   metadata,
-  user,
+  _user,
   t,
 ) => {
   const invoiceNumber = metadata?.invoiceNumber;
+  const customerName = metadata?.customerName;
+
+  if (invoiceNumber && customerName) {
+    return t("notifications.invoice_overdue.with_number_and_customer", {
+      invoiceNumber,
+      customerName,
+    });
+  }
   return invoiceNumber
     ? t("notifications.invoice_overdue.with_number", { invoiceNumber })
     : t("notifications.invoice_overdue.title");
@@ -165,7 +172,7 @@ const handleInvoiceScheduled: NotificationDescriptionHandler = (
 
 const handleInvoiceSent: NotificationDescriptionHandler = (
   metadata,
-  user,
+  _user,
   t,
 ) => {
   const invoiceNumber = metadata?.invoiceNumber;
@@ -186,7 +193,7 @@ const handleInvoiceSent: NotificationDescriptionHandler = (
 
 const handleInvoiceReminderSent: NotificationDescriptionHandler = (
   metadata,
-  user,
+  _user,
   t,
 ) => {
   const invoiceNumber = metadata?.invoiceNumber;
@@ -207,7 +214,7 @@ const handleInvoiceReminderSent: NotificationDescriptionHandler = (
 
 const handleInvoiceCancelled: NotificationDescriptionHandler = (
   metadata,
-  user,
+  _user,
   t,
 ) => {
   const invoiceNumber = metadata?.invoiceNumber;
@@ -219,12 +226,9 @@ const handleInvoiceCancelled: NotificationDescriptionHandler = (
       customerName,
     });
   }
-  if (invoiceNumber) {
-    return t("notifications.invoice_cancelled.without_customer", {
-      invoiceNumber,
-    });
-  }
-  return t("notifications.invoice_cancelled.title");
+  return invoiceNumber
+    ? t("notifications.invoice_cancelled.without_customer", { invoiceNumber })
+    : t("notifications.invoice_cancelled.title");
 };
 
 const handleInvoiceCreated: NotificationDescriptionHandler = (
@@ -266,6 +270,168 @@ const handleInvoiceCreated: NotificationDescriptionHandler = (
     });
   }
   return t("notifications.invoice_created.title");
+};
+
+const handleInvoiceRefunded: NotificationDescriptionHandler = (
+  metadata,
+  _user,
+  t,
+) => {
+  const invoiceNumber = metadata?.invoiceNumber;
+  const customerName = metadata?.customerName;
+
+  if (invoiceNumber && customerName) {
+    return t("notifications.invoice_refunded.with_customer", {
+      invoiceNumber,
+      customerName,
+    });
+  }
+  return invoiceNumber
+    ? t("notifications.invoice_refunded.without_customer", { invoiceNumber })
+    : t("notifications.invoice_refunded.title");
+};
+
+const handleRecurringSeriesStarted: NotificationDescriptionHandler = (
+  metadata,
+  _user,
+  t,
+) => {
+  const customerName = metadata?.customerName;
+  const rawFrequency = metadata?.frequency;
+  const endType = metadata?.endType;
+  const endCount = metadata?.endCount;
+
+  // Convert raw frequency (e.g., "monthly_date") to human-readable label (e.g., "Monthly")
+  const frequency = rawFrequency
+    ? getFrequencyShortLabel(rawFrequency)
+    : undefined;
+
+  if (customerName && frequency) {
+    if (endType === "after_count" && endCount) {
+      return t(
+        "notifications.recurring_series_started.with_customer_and_count",
+        {
+          customerName,
+          frequency,
+          count: endCount,
+        },
+      );
+    }
+    return t("notifications.recurring_series_started.with_customer", {
+      customerName,
+      frequency,
+    });
+  }
+  if (frequency) {
+    return t("notifications.recurring_series_started.with_frequency", {
+      frequency,
+    });
+  }
+  return t("notifications.recurring_series_started.title");
+};
+
+const handleRecurringSeriesCompleted: NotificationDescriptionHandler = (
+  metadata,
+  _user,
+  t,
+) => {
+  const customerName = metadata?.customerName;
+  const totalGenerated = metadata?.totalGenerated;
+
+  if (customerName && totalGenerated) {
+    return t(
+      "notifications.recurring_series_completed.with_customer_and_count",
+      {
+        customerName,
+        count: totalGenerated,
+      },
+    );
+  }
+  if (totalGenerated) {
+    return t("notifications.recurring_series_completed.with_count", {
+      count: totalGenerated,
+    });
+  }
+  return t("notifications.recurring_series_completed.title");
+};
+
+const handleRecurringSeriesPaused: NotificationDescriptionHandler = (
+  metadata,
+  _user,
+  t,
+) => {
+  const customerName = metadata?.customerName;
+  const reason = metadata?.reason;
+  const failureCount = metadata?.failureCount;
+
+  if (reason === "auto_failure" && failureCount) {
+    if (customerName) {
+      return t(
+        "notifications.recurring_series_paused.auto_failure_with_customer",
+        {
+          customerName,
+          failureCount,
+        },
+      );
+    }
+    return t("notifications.recurring_series_paused.auto_failure", {
+      failureCount,
+    });
+  }
+  if (customerName) {
+    return t("notifications.recurring_series_paused.with_customer", {
+      customerName,
+    });
+  }
+  return t("notifications.recurring_series_paused.title");
+};
+
+const handleRecurringInvoiceUpcoming: NotificationDescriptionHandler = (
+  metadata,
+  user,
+  t,
+) => {
+  const count = metadata?.count ?? 1;
+  const invoices = metadata?.invoices as
+    | Array<{
+        customerName?: string;
+        amount?: number;
+        currency?: string;
+      }>
+    | undefined;
+
+  // Single invoice with details
+  if (count === 1 && invoices?.[0]) {
+    const invoice = invoices[0];
+    if (invoice.customerName && invoice.amount && invoice.currency) {
+      const formattedAmount =
+        formatAmount({
+          currency: invoice.currency,
+          amount: invoice.amount,
+          locale: user?.locale || "en-US",
+        }) ||
+        new Intl.NumberFormat("en-US", {
+          style: "currency",
+          currency: invoice.currency,
+        }).format(invoice.amount);
+
+      return t("notifications.recurring_invoice_upcoming.single_with_details", {
+        customerName: invoice.customerName,
+        amount: formattedAmount,
+      });
+    }
+    if (invoice.customerName) {
+      return t(
+        "notifications.recurring_invoice_upcoming.single_with_customer",
+        {
+          customerName: invoice.customerName,
+        },
+      );
+    }
+  }
+
+  // Multiple invoices or single without details
+  return t("notifications.recurring_invoice_upcoming.batch", { count });
 };
 
 const handleInboxAutoMatched: NotificationDescriptionHandler = (
@@ -542,6 +708,11 @@ const notificationHandlers: Record<string, NotificationDescriptionHandler> = {
   invoice_reminder_sent: handleInvoiceReminderSent,
   invoice_cancelled: handleInvoiceCancelled,
   invoice_created: handleInvoiceCreated,
+  invoice_refunded: handleInvoiceRefunded,
+  recurring_series_started: handleRecurringSeriesStarted,
+  recurring_series_completed: handleRecurringSeriesCompleted,
+  recurring_series_paused: handleRecurringSeriesPaused,
+  recurring_invoice_upcoming: handleRecurringInvoiceUpcoming,
 };
 
 export function getNotificationDescription(

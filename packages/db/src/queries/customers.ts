@@ -1,16 +1,19 @@
-import type { Database } from "@db/client";
-import {
-  customerTags,
-  customers,
-  invoices,
-  tags,
-  trackerProjects,
-} from "@db/schema";
 import { buildSearchQuery } from "@midday/db/utils/search-query";
 import { generateToken } from "@midday/invoice/token";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
+import { nanoid } from "nanoid";
+import type { Database } from "../client";
+import {
+  customers,
+  customerTags,
+  invoices,
+  tags,
+  teams,
+  trackerProjects,
+} from "../schema";
 import { createActivity } from "./activities";
+import { getExchangeRatesBatch } from "./exhange-rates";
 
 type GetCustomerByIdParams = {
   id: string;
@@ -42,6 +45,39 @@ export const getCustomerById = async (
       countryCode: customers.countryCode,
       token: customers.token,
       contact: customers.contact,
+      // Customer relationship fields
+      status: customers.status,
+      preferredCurrency: customers.preferredCurrency,
+      defaultPaymentTerms: customers.defaultPaymentTerms,
+      isArchived: customers.isArchived,
+      source: customers.source,
+      externalId: customers.externalId,
+      // Enrichment fields
+      logoUrl: customers.logoUrl,
+      description: customers.description,
+      industry: customers.industry,
+      companyType: customers.companyType,
+      employeeCount: customers.employeeCount,
+      foundedYear: customers.foundedYear,
+      estimatedRevenue: customers.estimatedRevenue,
+      fundingStage: customers.fundingStage,
+      totalFunding: customers.totalFunding,
+      headquartersLocation: customers.headquartersLocation,
+      timezone: customers.timezone,
+      linkedinUrl: customers.linkedinUrl,
+      twitterUrl: customers.twitterUrl,
+      instagramUrl: customers.instagramUrl,
+      facebookUrl: customers.facebookUrl,
+      ceoName: customers.ceoName,
+      financeContact: customers.financeContact,
+      financeContactEmail: customers.financeContactEmail,
+      primaryLanguage: customers.primaryLanguage,
+      fiscalYearEnd: customers.fiscalYearEnd,
+      enrichmentStatus: customers.enrichmentStatus,
+      enrichedAt: customers.enrichedAt,
+      // Portal fields
+      portalEnabled: customers.portalEnabled,
+      portalId: customers.portalId,
       invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
       projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
       tags: sql<CustomerTag[]>`
@@ -94,7 +130,7 @@ export const getCustomers = async (
   // Apply search query filter
   if (q) {
     // If the query is a number, search by numeric fields if any
-    if (!Number.isNaN(Number.parseInt(q))) {
+    if (!Number.isNaN(Number.parseInt(q, 10))) {
       // Add numeric search logic if needed
     } else {
       const query = buildSearchQuery(q);
@@ -128,8 +164,44 @@ export const getCustomers = async (
       countryCode: customers.countryCode,
       token: customers.token,
       contact: customers.contact,
+      // Customer relationship fields
+      status: customers.status,
+      isArchived: customers.isArchived,
+      // Enrichment fields for list view
+      logoUrl: customers.logoUrl,
+      description: customers.description,
+      industry: customers.industry,
+      companyType: customers.companyType,
+      employeeCount: customers.employeeCount,
+      foundedYear: customers.foundedYear,
+      estimatedRevenue: customers.estimatedRevenue,
+      fundingStage: customers.fundingStage,
+      totalFunding: customers.totalFunding,
+      headquartersLocation: customers.headquartersLocation,
+      timezone: customers.timezone,
+      linkedinUrl: customers.linkedinUrl,
+      twitterUrl: customers.twitterUrl,
+      instagramUrl: customers.instagramUrl,
+      facebookUrl: customers.facebookUrl,
+      ceoName: customers.ceoName,
+      financeContact: customers.financeContact,
+      financeContactEmail: customers.financeContactEmail,
+      primaryLanguage: customers.primaryLanguage,
+      fiscalYearEnd: customers.fiscalYearEnd,
+      enrichmentStatus: customers.enrichmentStatus,
+      enrichedAt: customers.enrichedAt,
+      // Portal fields
+      portalEnabled: customers.portalEnabled,
+      portalId: customers.portalId,
       invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
       projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
+      // Financial metrics (cast to float so the PG driver returns a JS number, not a string)
+      totalRevenue: sql<number>`cast(coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0) as float)`,
+      outstandingAmount: sql<number>`cast(coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0) as float)`,
+      lastInvoiceDate: sql<string | null>`max(${invoices.issueDate})`,
+      invoiceCurrency: sql<
+        string | null
+      >`(array_agg(${invoices.currency}) filter (where ${invoices.currency} is not null))[1]`,
       tags: sql<CustomerTag[]>`
         coalesce(
           json_agg(
@@ -186,8 +258,43 @@ export const getCustomers = async (
       isAscending
         ? query.orderBy(asc(sql`min(${tags.name})`))
         : query.orderBy(desc(sql`min(${tags.name})`));
+    } else if (column === "industry") {
+      isAscending
+        ? query.orderBy(asc(customers.industry))
+        : query.orderBy(desc(customers.industry));
+    } else if (column === "country") {
+      isAscending
+        ? query.orderBy(asc(customers.country))
+        : query.orderBy(desc(customers.country));
+    } else if (column === "total_revenue") {
+      isAscending
+        ? query.orderBy(
+            asc(
+              sql`coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0)`,
+            ),
+          )
+        : query.orderBy(
+            desc(
+              sql`coalesce(sum(case when ${invoices.status} = 'paid' then ${invoices.amount} else 0 end), 0)`,
+            ),
+          );
+    } else if (column === "outstanding") {
+      isAscending
+        ? query.orderBy(
+            asc(
+              sql`coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0)`,
+            ),
+          )
+        : query.orderBy(
+            desc(
+              sql`coalesce(sum(case when ${invoices.status} in ('unpaid', 'overdue') then ${invoices.amount} else 0 end), 0)`,
+            ),
+          );
+    } else if (column === "last_invoice") {
+      isAscending
+        ? query.orderBy(asc(sql`max(${invoices.issueDate})`))
+        : query.orderBy(desc(sql`max(${invoices.issueDate})`));
     }
-    // Add other sorting options as needed
   } else {
     // Default sort by created_at descending
     query.orderBy(desc(customers.createdAt));
@@ -375,6 +482,32 @@ export const upsertCustomer = async (
       countryCode: customers.countryCode,
       token: customers.token,
       contact: customers.contact,
+      // Enrichment fields
+      logoUrl: customers.logoUrl,
+      description: customers.description,
+      industry: customers.industry,
+      companyType: customers.companyType,
+      employeeCount: customers.employeeCount,
+      foundedYear: customers.foundedYear,
+      estimatedRevenue: customers.estimatedRevenue,
+      fundingStage: customers.fundingStage,
+      totalFunding: customers.totalFunding,
+      headquartersLocation: customers.headquartersLocation,
+      timezone: customers.timezone,
+      linkedinUrl: customers.linkedinUrl,
+      twitterUrl: customers.twitterUrl,
+      instagramUrl: customers.instagramUrl,
+      facebookUrl: customers.facebookUrl,
+      ceoName: customers.ceoName,
+      financeContact: customers.financeContact,
+      financeContactEmail: customers.financeContactEmail,
+      primaryLanguage: customers.primaryLanguage,
+      fiscalYearEnd: customers.fiscalYearEnd,
+      enrichmentStatus: customers.enrichmentStatus,
+      enrichedAt: customers.enrichedAt,
+      // Portal fields
+      portalEnabled: customers.portalEnabled,
+      portalId: customers.portalId,
       invoiceCount: sql<number>`cast(count(${invoices.id}) as int)`,
       projectCount: sql<number>`cast(count(${trackerProjects.id}) as int)`,
       tags: sql<CustomerTag[]>`
@@ -426,3 +559,261 @@ export const deleteCustomer = async (
   // Return the deleted customer data
   return customerToDelete;
 };
+
+export type GetCustomerInvoiceSummaryParams = {
+  customerId: string;
+  teamId: string;
+};
+
+export async function getCustomerInvoiceSummary(
+  db: Database,
+  params: GetCustomerInvoiceSummaryParams,
+) {
+  const { customerId, teamId } = params;
+
+  const [[team], invoiceData] = await Promise.all([
+    db
+      .select({ baseCurrency: teams.baseCurrency })
+      .from(teams)
+      .where(eq(teams.id, teamId))
+      .limit(1),
+    db
+      .select({
+        amount: invoices.amount,
+        currency: invoices.currency,
+        status: invoices.status,
+      })
+      .from(invoices)
+      .where(
+        and(eq(invoices.customerId, customerId), eq(invoices.teamId, teamId)),
+      ),
+  ]);
+
+  const baseCurrency = team?.baseCurrency || "USD";
+
+  if (invoiceData.length === 0) {
+    return {
+      totalAmount: 0,
+      paidAmount: 0,
+      outstandingAmount: 0,
+      invoiceCount: 0,
+      currency: baseCurrency,
+    };
+  }
+
+  // Collect unique currencies that need conversion (excluding base currency)
+  const currenciesToConvert = [
+    ...new Set(
+      invoiceData
+        .map((inv) => inv.currency || baseCurrency)
+        .filter((currency) => currency !== baseCurrency),
+    ),
+  ];
+
+  const exchangeRateMap = new Map<string, number>();
+  if (currenciesToConvert.length > 0) {
+    const pairs = currenciesToConvert.map((c) => ({
+      base: c,
+      target: baseCurrency,
+    }));
+    const batchRates = await getExchangeRatesBatch(db, { pairs });
+    for (const [key, rate] of batchRates) {
+      const base = key.split(":")[0];
+      if (base) exchangeRateMap.set(base, rate);
+    }
+  }
+
+  // Convert all amounts to base currency and calculate totals
+  let totalAmount = 0;
+  let paidAmount = 0;
+  let outstandingAmount = 0;
+  let invoiceCount = 0;
+
+  for (const invoice of invoiceData) {
+    const amount = Number(invoice.amount) || 0;
+    const currency = invoice.currency || baseCurrency;
+
+    let convertedAmount = amount;
+    let canConvert = true;
+
+    // Convert to base currency if different
+    if (currency !== baseCurrency) {
+      const exchangeRate = exchangeRateMap.get(currency);
+      if (exchangeRate) {
+        convertedAmount = amount * exchangeRate;
+      } else {
+        // Skip invoices with missing exchange rates to avoid mixing currencies
+        // This prevents silently producing incorrect totals
+        canConvert = false;
+      }
+    }
+
+    // Only include invoices that can be properly converted and are paid or outstanding
+    // Draft, canceled, and scheduled invoices don't count toward financial totals
+    if (canConvert) {
+      if (invoice.status === "paid") {
+        paidAmount += convertedAmount;
+        totalAmount += convertedAmount;
+        invoiceCount++;
+      } else if (invoice.status === "unpaid" || invoice.status === "overdue") {
+        outstandingAmount += convertedAmount;
+        totalAmount += convertedAmount;
+        invoiceCount++;
+      }
+    }
+  }
+
+  return {
+    totalAmount: Math.round(totalAmount * 100) / 100,
+    paidAmount: Math.round(paidAmount * 100) / 100,
+    outstandingAmount: Math.round(outstandingAmount * 100) / 100,
+    invoiceCount,
+    currency: baseCurrency,
+  };
+}
+
+export type ToggleCustomerPortalParams = {
+  customerId: string;
+  teamId: string;
+  enabled: boolean;
+};
+
+/**
+ * Toggle customer portal access.
+ * Generates a portal_id (nanoid(21)) on first enable.
+ */
+export async function toggleCustomerPortal(
+  db: Database,
+  params: ToggleCustomerPortalParams,
+) {
+  const { customerId, teamId, enabled } = params;
+
+  // Get current customer to check if portal_id exists
+  const [currentCustomer] = await db
+    .select({
+      id: customers.id,
+      portalId: customers.portalId,
+    })
+    .from(customers)
+    .where(and(eq(customers.id, customerId), eq(customers.teamId, teamId)))
+    .limit(1);
+
+  if (!currentCustomer) {
+    throw new Error("Customer not found");
+  }
+
+  // Generate portal_id if enabling and doesn't exist yet
+  const portalId =
+    enabled && !currentCustomer.portalId
+      ? nanoid(21)
+      : currentCustomer.portalId;
+
+  // Update the customer
+  const [result] = await db
+    .update(customers)
+    .set({
+      portalEnabled: enabled,
+      portalId,
+    })
+    .where(and(eq(customers.id, customerId), eq(customers.teamId, teamId)))
+    .returning({
+      id: customers.id,
+      portalEnabled: customers.portalEnabled,
+      portalId: customers.portalId,
+    });
+
+  return result;
+}
+
+export type GetCustomerByPortalIdParams = {
+  portalId: string;
+};
+
+/**
+ * Get customer by portal ID for public portal page.
+ * Only returns customer if portal is enabled.
+ */
+export async function getCustomerByPortalId(
+  db: Database,
+  params: GetCustomerByPortalIdParams,
+) {
+  const { portalId } = params;
+
+  const [result] = await db
+    .select({
+      id: customers.id,
+      name: customers.name,
+      email: customers.email,
+      website: customers.website,
+      teamId: customers.teamId,
+      portalEnabled: customers.portalEnabled,
+      portalId: customers.portalId,
+      team: {
+        id: teams.id,
+        name: teams.name,
+        logoUrl: teams.logoUrl,
+        baseCurrency: teams.baseCurrency,
+      },
+    })
+    .from(customers)
+    .innerJoin(teams, eq(teams.id, customers.teamId))
+    .where(
+      and(eq(customers.portalId, portalId), eq(customers.portalEnabled, true)),
+    )
+    .limit(1);
+
+  return result;
+}
+
+export type GetCustomerPortalInvoicesParams = {
+  customerId: string;
+  teamId: string;
+  cursor?: string | null;
+  pageSize?: number;
+};
+
+/**
+ * Get invoices for customer portal.
+ * Only returns non-draft invoices (paid, unpaid, overdue).
+ */
+export async function getCustomerPortalInvoices(
+  db: Database,
+  params: GetCustomerPortalInvoicesParams,
+) {
+  const { customerId, teamId, cursor, pageSize = 10 } = params;
+
+  const offset = cursor ? Number.parseInt(cursor, 10) : 0;
+
+  const data = await db
+    .select({
+      id: invoices.id,
+      invoiceNumber: invoices.invoiceNumber,
+      status: invoices.status,
+      amount: invoices.amount,
+      currency: invoices.currency,
+      issueDate: invoices.issueDate,
+      dueDate: invoices.dueDate,
+      token: invoices.token,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.customerId, customerId),
+        eq(invoices.teamId, teamId),
+        // Only show paid, unpaid, overdue (exclude draft, canceled, scheduled, refunded)
+        sql`${invoices.status} IN ('paid', 'unpaid', 'overdue')`,
+      ),
+    )
+    .orderBy(desc(invoices.issueDate))
+    .limit(pageSize)
+    .offset(offset);
+
+  const nextCursor =
+    data.length === pageSize ? (offset + pageSize).toString() : null;
+
+  return {
+    data,
+    nextCursor,
+    hasMore: data.length === pageSize,
+  };
+}

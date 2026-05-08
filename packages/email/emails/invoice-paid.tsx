@@ -22,7 +22,7 @@ interface Props {
 
 export const InvoicePaidEmail = ({
   invoiceNumber = "INV-0001",
-  link = "https://app.midday.ai/invoices?invoiceId=40b25275-258c-48e0-9678-57324cd770a6&type=details",
+  link = "https://app.midday.ai/invoices?invoiceId=40b25275-258c-48e0-9678-57324cd770a6&invoiceType=details",
 }: Props) => {
   const text = `Invoice ${invoiceNumber} has been paid`;
   const themeClasses = getEmailThemeClasses();
@@ -44,7 +44,7 @@ export const InvoicePaidEmail = ({
         >
           <Logo />
           <Heading
-            className={`text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
+            className={`font-serif text-[21px] font-normal text-center p-0 my-[30px] mx-0 ${themeClasses.heading}`}
             style={{ color: lightStyles.text.color }}
           >
             Invoice {invoiceNumber} <br /> has been Paid

@@ -1,7 +1,5 @@
 "use client";
 
-import { useDocumentParams } from "@/hooks/use-document-params";
-import { useTRPC } from "@/trpc/client";
 import {
   Accordion,
   AccordionContent,
@@ -10,7 +8,8 @@ import {
 } from "@midday/ui/accordion";
 import { Carousel, CarouselContent, CarouselItem } from "@midday/ui/carousel";
 import { useQuery } from "@tanstack/react-query";
-import * as React from "react";
+import { useDocumentParams } from "@/hooks/use-document-params";
+import { useTRPC } from "@/trpc/client";
 import { VaultItem } from "./vault-item";
 import { VaultRelatedFilesSkeleton } from "./vault-related-files-skeleton";
 
@@ -22,7 +21,7 @@ export function VaultRelatedFiles() {
     trpc.documents.getRelatedDocuments.queryOptions(
       {
         pageSize: 12,
-        id: params?.documentId!,
+        id: params?.documentId ?? "",
       },
       {
         enabled: !!params?.documentId,

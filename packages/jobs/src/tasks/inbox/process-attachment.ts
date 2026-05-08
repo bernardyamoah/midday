@@ -3,16 +3,16 @@ import { processAttachmentSchema } from "@jobs/schema";
 import {
   createInbox,
   getInboxByFilePath,
+  getTeamById,
+  groupRelatedInboxItems,
   updateInbox,
   updateInboxWithProcessedData,
 } from "@midday/db/queries";
-import { getTeamById } from "@midday/db/queries";
 import { DocumentClient } from "@midday/documents";
 import { createClient } from "@midday/supabase/job";
 import { logger, schemaTask, tasks } from "@trigger.dev/sdk";
 import { convertHeic } from "../document/convert-heic";
 import { processDocument } from "../document/process-document";
-import { embedInbox } from "./embed-inbox";
 
 export const processAttachment = schemaTask({
   id: "process-attachment",
@@ -35,17 +35,10 @@ export const processAttachment = schemaTask({
     filePath,
     referenceId,
     website,
+    senderEmail,
     inboxAccountId,
   }) => {
     const supabase = createClient();
-
-    // If the file is a HEIC we need to convert it to a JPG
-    if (mimetype === "image/heic") {
-      await convertHeic.triggerAndWait({
-        filePath,
-      });
-    }
-
     const filename = filePath.at(-1);
 
     // Check if inbox item already exists (for retry scenarios or manual uploads)
@@ -59,7 +52,26 @@ export const processAttachment = schemaTask({
       existingItem: !!inboxData,
       existingStatus: inboxData?.status,
       teamId,
+      mimetype,
     });
+
+    // Convert HEIC to JPEG if needed (do this early so we can update contentType immediately)
+    let effectiveMimetype = mimetype;
+    if (mimetype === "image/heic") {
+      logger.info("Converting HEIC to JPEG", { filePath: filePath.join("/") });
+      await convertHeic.triggerAndWait({ filePath });
+      effectiveMimetype = "image/jpeg";
+
+      // Update contentType immediately if item exists (so frontend can show image sooner)
+      if (inboxData && inboxData.contentType === "image/heic") {
+        await updateInbox(getDb(), {
+          id: inboxData.id,
+          teamId,
+          contentType: "image/jpeg",
+        });
+        logger.info("Updated contentType to jpeg", { inboxId: inboxData.id });
+      }
+    }
 
     // Create inbox item if it doesn't exist (for non-manual uploads)
     // or update existing item status if it was created manually
@@ -71,18 +83,40 @@ export const processAttachment = schemaTask({
         teamId,
         filePath,
         fileName: filename ?? "Unknown",
-        contentType: mimetype,
+        contentType: effectiveMimetype,
         size,
         referenceId,
         website,
+        senderEmail,
         inboxAccountId,
-        status: "processing", // Set as processing when created by job
+        status: "processing",
       });
-    } else if (inboxData.status === "processing") {
-      logger.info("Found existing inbox item already in processing status", {
-        inboxId: inboxData.id,
-        filePath: filePath.join("/"),
-      });
+    } else if (
+      inboxData.status === "processing" ||
+      inboxData.status === "new"
+    ) {
+      // Check if item is stuck (processing for more than 5 minutes)
+      const STUCK_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const createdAt = inboxData.createdAt
+        ? new Date(inboxData.createdAt).getTime()
+        : null;
+      const now = Date.now();
+      const isStuck = createdAt && now - createdAt > STUCK_THRESHOLD_MS;
+
+      if (isStuck) {
+        logger.warn("Found stuck inbox item, recovering", {
+          inboxId: inboxData.id,
+          filePath: filePath.join("/"),
+          status: inboxData.status,
+          ageMinutes: createdAt ? Math.round((now - createdAt) / 60000) : null,
+        });
+      } else {
+        logger.info("Found existing inbox item in processing status", {
+          inboxId: inboxData.id,
+          filePath: filePath.join("/"),
+          status: inboxData.status,
+        });
+      }
     } else {
       logger.info("Found existing inbox item with status", {
         inboxId: inboxData.id,
@@ -111,14 +145,15 @@ export const processAttachment = schemaTask({
 
       logger.info("Starting document processing", {
         inboxId: inboxData.id,
-        mimetype,
+        mimetype: effectiveMimetype,
+        originalMimetype: mimetype,
         referenceId,
         teamName: teamData?.name,
       });
 
       const result = await document.getInvoiceOrReceipt({
         documentUrl: data?.signedUrl,
-        mimetype,
+        mimetype: effectiveMimetype, // Use effective mimetype (jpeg if converted from heic)
         companyName: teamData?.name,
       });
 
@@ -130,37 +165,41 @@ export const processAttachment = schemaTask({
 
       await updateInboxWithProcessedData(getDb(), {
         id: inboxData.id,
-        amount: result.amount,
-        currency: result.currency,
-        displayName: result.name,
-        website: result.website,
-        date: result.date,
-        taxAmount: result.tax_amount,
-        taxRate: result.tax_rate,
-        taxType: result.tax_type,
+        amount: result.amount ?? undefined,
+        currency: result.currency ?? undefined,
+        displayName: result.name ?? undefined,
+        website: result.website ?? undefined,
+        date: result.date ?? undefined,
+        taxAmount: result.tax_amount ?? undefined,
+        taxRate: result.tax_rate ?? undefined,
+        taxType: result.tax_type ?? undefined,
         type: result.type as "invoice" | "expense" | null | undefined,
+        invoiceNumber: result.invoice_number ?? undefined,
         status: "analyzing", // Keep analyzing until matching is complete
       });
 
+      // Group related inbox items after storing invoice number
+      try {
+        await groupRelatedInboxItems(getDb(), {
+          inboxId: inboxData.id,
+          teamId,
+        });
+      } catch (error) {
+        logger.error("Failed to group related inbox items", {
+          inboxId: inboxData.id,
+          error: error instanceof Error ? error.message : "Unknown error",
+        });
+        // Don't fail the entire process if grouping fails
+      }
+
       // NOTE: Process documents and images for classification
       await processDocument.trigger({
-        mimetype,
+        mimetype: effectiveMimetype, // Use effective mimetype (jpeg if converted from heic)
         filePath,
         teamId,
       });
 
-      // Create embedding and wait for completion
-      await embedInbox.triggerAndWait({
-        inboxId: inboxData.id,
-        teamId,
-      });
-
-      logger.info("Inbox embedding completed", {
-        inboxId: inboxData.id,
-        teamId,
-      });
-
-      // After embedding is complete, trigger efficient matching
+      // Trigger matching immediately (no embedding dependency in V2).
       await tasks.trigger("batch-process-matching", {
         teamId,
         inboxIds: [inboxData.id],
@@ -175,7 +214,8 @@ export const processAttachment = schemaTask({
         inboxId: inboxData.id,
         error: error instanceof Error ? error.message : "Unknown error",
         referenceId,
-        mimetype,
+        mimetype: effectiveMimetype,
+        originalMimetype: mimetype,
       });
 
       // Re-throw timeout errors to trigger retry

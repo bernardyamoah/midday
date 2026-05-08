@@ -1,7 +1,5 @@
 "use client";
 
-import { useProductParams } from "@/hooks/use-product-params";
-import { useTRPC } from "@/trpc/client";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,14 +20,17 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { Sheet, SheetContent, SheetHeader } from "@midday/ui/sheet";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useProductParams } from "@/hooks/use-product-params";
+import { useTeamQuery } from "@/hooks/use-team";
+import { useTRPC } from "@/trpc/client";
 import { ProductForm } from "../forms/product-form";
 
-export function ProductEditSheet({
-  defaultCurrency,
-}: { defaultCurrency: string }) {
+export function ProductEditSheet() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { setParams, productId } = useProductParams();
+  const { data: team } = useTeamQuery();
+  const defaultCurrency = team?.baseCurrency || "USD";
 
   const isOpen = Boolean(productId);
 
@@ -38,7 +39,7 @@ export function ProductEditSheet({
       { id: productId! },
       {
         enabled: isOpen,
-        initialData: () => {
+        placeholderData: () => {
           const pages = queryClient
             .getQueriesData({ queryKey: trpc.invoiceProducts.get.queryKey() })
             // @ts-expect-error

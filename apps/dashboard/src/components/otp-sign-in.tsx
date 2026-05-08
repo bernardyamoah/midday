@@ -1,22 +1,33 @@
 "use client";
 
-import { verifyOtpAction } from "@/actions/verify-otp-action";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { createClient } from "@midday/supabase/client";
 import { cn } from "@midday/ui/cn";
-import { Form, FormControl, FormField, FormItem } from "@midday/ui/form";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormMessage,
+} from "@midday/ui/form";
 import { Input } from "@midday/ui/input";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@midday/ui/input-otp";
 import { Spinner } from "@midday/ui/spinner";
 import { SubmitButton } from "@midday/ui/submit-button";
-import { useAction } from "next-safe-action/hooks";
 import { useSearchParams } from "next/navigation";
+import { useAction } from "next-safe-action/hooks";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { verifyOtpAction } from "@/actions/verify-otp-action";
 
 const formSchema = z.object({
-  email: z.string().email(),
+  email: z
+    .string()
+    .email()
+    .refine((email) => !email.includes("+"), {
+      message: "Email addresses with '+' are not allowed",
+    }),
 });
 
 type Props = {
@@ -115,7 +126,7 @@ export function OTPSignIn({ className }: Props) {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)}>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="w-full">
         <div className={cn("flex flex-col space-y-4", className)}>
           <FormField
             control={form.control}
@@ -131,6 +142,7 @@ export function OTPSignIn({ className }: Props) {
                     spellCheck="false"
                   />
                 </FormControl>
+                <FormMessage />
               </FormItem>
             )}
           />

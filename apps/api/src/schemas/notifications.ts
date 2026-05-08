@@ -132,7 +132,7 @@ export const notificationSchema = z
     }),
     priority: z.number().int().min(1).max(10).openapi({
       description:
-        "Priority level of the notification (1-3 = user notifications, 4-10 = insights)",
+        "Priority level of the notification (1-3 = user notifications, 4-10 = system)",
       example: 3,
     }),
     source: z.enum(["system", "user"]).openapi({
@@ -143,7 +143,7 @@ export const notificationSchema = z
       description: "Current status of the notification",
       example: "unread",
     }),
-    metadata: z.record(z.any()).openapi({
+    metadata: z.record(z.any(), z.any()).openapi({
       description: "Additional metadata for the notification",
       example: {
         transactionCount: 5,

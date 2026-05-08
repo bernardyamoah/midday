@@ -5,31 +5,35 @@
   "scripts": {
     "dev": "trigger dev",
     "deploy": "trigger deploy",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test": "bun test --exit src",
     "typecheck": "tsc --noEmit"
   },
   "exports": {
     "./schema": "./src/schema.ts"
   },
   "dependencies": {
-    "@ai-sdk/google": "^2.0.11",
-    "@fast-csv/format": "5.0.2",
+    "@ai-sdk/google": "catalog:",
+    "@fast-csv/format": "catalog:",
     "@midday/db": "workspace:*",
     "@midday/email": "workspace:*",
-    "@midday/engine": "workspace:*",
-    "@midday/engine-client": "workspace:*",
+    "@midday/encryption": "workspace:*",
     "@midday/notifications": "workspace:*",
     "@midday/supabase": "workspace:*",
-    "@sindresorhus/slugify": "^2.2.1",
-    "@zip.js/zip.js": "^2.7.62",
-    "ai": "5.0.28",
-    "camelcase-keys": "^9.1.3",
-    "heic-convert": "1.2.4",
-    "trigger.dev": "4.0.1",
-    "node-xlsx": "^0.24.0",
-    "sharp": "0.34.1"
+    "@midday/trpc": "workspace:*",
+    "@sindresorhus/slugify": "catalog:",
+    "@zip.js/zip.js": "^2.8.23",
+    "ai": "catalog:",
+    "camelcase-keys": "catalog:",
+    "heic-convert": "catalog:",
+    "node-xlsx": "catalog:",
+    "sharp": "catalog:",
+    "trigger.dev": "4.4.3",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/heic-convert": "2.1.0",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/heic-convert": "1.2.3"
   }
 }

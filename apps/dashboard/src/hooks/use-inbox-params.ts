@@ -5,17 +5,24 @@ import {
   parseAsString,
   parseAsStringLiteral,
 } from "nuqs/server";
+import { startTransition } from "react";
 
 export const inboxParamsSchema = {
   inboxId: parseAsString,
-  type: parseAsStringLiteral(["list", "details"]),
-  order: parseAsStringLiteral(["asc", "desc"]).withDefault("asc"),
-  sort: parseAsStringLiteral(["date", "alphabetical"]).withDefault("date"),
+  inboxType: parseAsStringLiteral(["list", "details"]),
+  inboxOrder: parseAsStringLiteral(["asc", "desc"]).withDefault("asc"),
+  inboxSort: parseAsStringLiteral([
+    "date",
+    "alphabetical",
+    "document_date",
+  ]).withDefault("date"),
   connected: parseAsBoolean,
 };
 
 export function useInboxParams() {
-  const [params, setParams] = useQueryStates(inboxParamsSchema);
+  const [params, setParams] = useQueryStates(inboxParamsSchema, {
+    startTransition,
+  });
 
   return {
     params,

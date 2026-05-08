@@ -1,74 +1,74 @@
 "use client";
 
-import { useTRPC } from "@/trpc/client";
-import {
-  Carousel,
-  CarouselContent,
-  CarouselItem,
-  CarouselNext,
-  CarouselPrevious,
-} from "@midday/ui/carousel";
-import { useQuery } from "@tanstack/react-query";
-import * as React from "react";
-import { AccountBalance } from "./account-balance";
-import { Assistant } from "./assistant";
-import { Inbox } from "./inbox";
-import { Invoice } from "./invoice";
-import { WidgetsNavigation } from "./navigation";
-import { Spending } from "./spending";
-import { Tracker } from "./tracker";
-import { Transactions } from "./transactions/transactions";
-import { Vault } from "./vault";
+import { LogEvents } from "@midday/events/events";
+import { Button } from "@midday/ui/button";
+import { Icons } from "@midday/ui/icons";
+import { useOpenPanel } from "@openpanel/nextjs";
+import { parseAsBoolean, useQueryState } from "nuqs";
+import { Suspense, useCallback } from "react";
+import { ChatProvider } from "@/components/chat/chat-context";
+import { ChatTitle } from "@/components/chat/chat-title";
+import { ChatView } from "@/components/chat/chat-view";
+import { NewChatButton } from "@/components/chat/new-chat-button";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { AskMidday } from "./ask-midday";
+import { McpBanner } from "./mcp-banner";
+import { SummarySkeleton, WidgetCardsSkeleton } from "./overview-skeleton";
+import { QuickActions } from "./quick-actions";
+import { WelcomeGreeting, WelcomeSummary } from "./welcome-section";
+import { WidgetCards } from "./widget-cards";
 
-export function Widgets() {
-  const trpc = useTRPC();
+export function OverviewView() {
+  const [assistant, setAssistant] = useQueryState("assistant", parseAsBoolean);
+  const { track } = useOpenPanel();
+  const { setParams: setInvoiceParams } = useInvoiceParams();
 
-  const { data: accounts } = useQuery(
-    trpc.bankAccounts.get.queryOptions({
-      enabled: true,
-    }),
-  );
+  const isChat = assistant === true;
 
-  // If the user has not connected any accounts, disable the widgets
-  const disabled = !accounts?.length;
+  const openChat = useCallback(() => {
+    track(LogEvents.AssistantOpened.name);
+    setAssistant(true);
+  }, [track, setAssistant]);
 
-  const items = [
-    <Assistant key="assistant" />,
-    <Spending disabled={disabled} key="spending" />,
-    <Invoice key="invoice" />,
-    <Transactions disabled={disabled} key="transactions" />,
-    <Tracker key="tracker" />,
-    <Inbox key="inbox" disabled={disabled} />,
-    <AccountBalance key="account-balance" />,
-    <Vault key="vault" />,
-  ];
+  const goBack = useCallback(() => {
+    setInvoiceParams(null);
+    setAssistant(null);
+  }, [setInvoiceParams, setAssistant]);
 
   return (
-    <Carousel
-      className="flex flex-col"
-      opts={{
-        align: "start",
-        watchDrag: false,
-      }}
-    >
-      <WidgetsNavigation />
-      <div className="ml-auto hidden md:flex">
-        <CarouselPrevious className="static p-0 border-none hover:bg-transparent" />
-        <CarouselNext className="static p-0 border-none hover:bg-transparent" />
-      </div>
+    <ChatProvider>
+      {isChat && (
+        <div>
+          <ChatView
+            header={
+              <>
+                <Button variant="outline" size="icon" onClick={goBack}>
+                  <Icons.ArrowBack className="size-4" />
+                </Button>
+                <ChatTitle />
+                <NewChatButton variant="outline" />
+              </>
+            }
+          />
+        </div>
+      )}
 
-      <CarouselContent className="-ml-[20px] 2xl:-ml-[40px] flex-col md:flex-row space-y-6 md:space-y-0">
-        {items.map((item, idx) => {
-          return (
-            <CarouselItem
-              className="lg:basis-1/2 xl:basis-1/3 3xl:basis-1/4 pl-[20px] 2xl:pl-[40px]"
-              key={idx.toString()}
-            >
-              {item}
-            </CarouselItem>
-          );
-        })}
-      </CarouselContent>
-    </Carousel>
+      {!isChat && (
+        <div className="mt-2 pb-16 flex flex-col justify-center min-h-[calc(100vh-120px)] max-w-3xl mx-auto w-full">
+          <div className="flex flex-col items-center text-center pt-6 pb-10 w-full">
+            <WelcomeGreeting />
+            <Suspense fallback={<SummarySkeleton />}>
+              <WelcomeSummary />
+            </Suspense>
+          </div>
+          <AskMidday onChatOpen={openChat} />
+          <QuickActions onChatOpen={openChat} />
+          <Suspense fallback={<WidgetCardsSkeleton />}>
+            <WidgetCards />
+          </Suspense>
+          <McpBanner />
+        </div>
+      )}
+    </ChatProvider>
   );
 }

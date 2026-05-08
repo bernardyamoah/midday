@@ -1,6 +1,3 @@
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useI18n } from "@/locales/client";
-import { useTRPC } from "@/trpc/client";
 import { CurrencyInput } from "@midday/ui/currency-input";
 import {
   Dialog,
@@ -28,7 +25,10 @@ import {
 } from "@midday/ui/select";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useI18n } from "@/locales/client";
+import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
   name: z.string().min(1, {

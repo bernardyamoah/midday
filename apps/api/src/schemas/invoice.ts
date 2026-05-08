@@ -1,16 +1,17 @@
 import { z } from "@hono/zod-openapi";
+import { isValidTimezone } from "@midday/location/timezones";
 
 // TipTap JSONContent schema for editor fields
 export const tiptapContentSchema: z.ZodType<any> = z
   .object({
     type: z.string().optional(),
-    attrs: z.record(z.any()).optional(),
+    attrs: z.record(z.any(), z.any()).optional(),
     content: z.array(z.any()).optional(),
     marks: z
       .array(
         z.object({
           type: z.enum(["bold", "italic", "strike", "link", "underline"]),
-          attrs: z.record(z.any()).optional(),
+          attrs: z.record(z.any(), z.any()).optional(),
         }),
       )
       .optional(),
@@ -89,7 +90,13 @@ const baseInvoiceTemplateSchema = z.object({
   subtotalLabel: z.string().optional(),
   taxLabel: z.string().optional(),
   discountLabel: z.string().optional(),
-  timezone: z.string().optional(),
+  timezone: z
+    .string()
+    .refine(isValidTimezone, {
+      message:
+        "Invalid timezone. Use IANA timezone format (e.g., 'America/New_York', 'UTC')",
+    })
+    .optional(),
   paymentLabel: z.string().optional(),
   noteLabel: z.string().optional(),
   logoUrl: z.string().optional().nullable(),
@@ -103,11 +110,19 @@ const baseInvoiceTemplateSchema = z.object({
   sendCopy: z.boolean().optional(),
   includeUnits: z.boolean().optional(),
   includeQr: z.boolean().optional(),
-  taxRate: z.number().min(0).max(100).optional(),
-  vatRate: z.number().min(0).max(100).optional(),
+  includeLineItemTax: z.boolean().optional(),
+  lineItemTaxLabel: z.string().optional(),
+  taxRate: z.number().min(0).max(100).optional().nullable(),
+  vatRate: z.number().min(0).max(100).optional().nullable(),
   size: z.enum(["a4", "letter"]).optional(),
   deliveryType: z.enum(["create", "create_and_send", "scheduled"]).optional(),
   locale: z.string().optional(),
+  paymentEnabled: z.boolean().optional(),
+  paymentTermsDays: z.number().min(0).max(365).optional(),
+  emailSubject: z.string().optional().nullable(),
+  emailHeading: z.string().optional().nullable(),
+  emailBody: z.string().optional().nullable(),
+  emailButtonText: z.string().optional().nullable(),
 });
 
 // tRPC-compatible template schema (uses z.any() for editor fields)
@@ -137,9 +152,10 @@ export const restUpsertInvoiceTemplateSchema = baseInvoiceTemplateSchema.extend(
 const baseDraftLineItemSchema = z.object({
   quantity: z.number().min(0, "Quantity must be at least 0").optional(),
   unit: z.string().optional().nullable(),
-  price: z.number().safe().optional(),
+  price: z.number().optional(),
   vat: z.number().min(0, "VAT must be at least 0").nullable().optional(),
   tax: z.number().min(0, "Tax must be at least 0").nullable().optional(),
+  taxRate: z.number().min(0).max(100).optional().nullable(),
 });
 
 // tRPC-compatible line item schema (uses string for name field)
@@ -178,6 +194,11 @@ const baseDraftInvoiceSchema = z.object({
   id: z.string().uuid().openapi({
     description: "Unique identifier for the draft invoice",
     example: "b3b7e6e2-8c2a-4e2a-9b1a-2e4b5c6d7f8a",
+  }),
+  templateId: z.string().uuid().nullable().optional().openapi({
+    description:
+      "Reference to the invoice template used (for tracking which template was selected)",
+    example: "c4d5e6f7-8901-2345-6789-abcdef012345",
   }),
   customerDetails: z.string().nullable().optional().openapi({
     description: "Customer details in stringified format",
@@ -390,6 +411,7 @@ export const lineItemSchema = z.object({
   price: z.number(),
   vat: z.number().min(0, "VAT must be at least 0").optional(),
   tax: z.number().min(0, "Tax must be at least 0").optional(),
+  taxRate: z.number().min(0).max(100).optional(),
   // Optional product reference
   productId: z.string().uuid().optional(),
 });
@@ -398,9 +420,10 @@ export const lineItemSchema = z.object({
 export const createInvoiceProductSchema = z.object({
   name: z.string().min(1, "Product name is required"),
   description: z.string().optional().nullable(),
-  price: z.number().safe().optional().nullable(),
+  price: z.number().optional().nullable(),
   currency: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
+  taxRate: z.number().min(0).max(100).optional().nullable(),
   isActive: z.boolean().optional(),
 });
 
@@ -408,9 +431,10 @@ export const updateInvoiceProductSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1, "Product name is required").optional(),
   description: z.string().optional().nullable(),
-  price: z.number().safe().optional().nullable(),
+  price: z.number().optional().nullable(),
   currency: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
+  taxRate: z.number().min(0).max(100).optional().nullable(),
   isActive: z.boolean().optional(),
 });
 
@@ -438,7 +462,7 @@ export const deleteInvoiceProductSchema = z.object({
 
 export const saveLineItemAsProductSchema = z.object({
   name: z.string().min(1, "Product name is required"),
-  price: z.number().safe().optional().nullable(),
+  price: z.number().optional().nullable(),
   unit: z.string().optional().nullable(),
   productId: z.string().uuid().optional(),
   currency: z.string().optional().nullable(),
@@ -447,9 +471,10 @@ export const saveLineItemAsProductSchema = z.object({
 export const upsertInvoiceProductSchema = z.object({
   name: z.string().min(1, "Product name is required"),
   description: z.string().optional().nullable(),
-  price: z.number().safe().optional().nullable(),
+  price: z.number().optional().nullable(),
   currency: z.string().optional().nullable(),
   unit: z.string().optional().nullable(),
+  taxRate: z.number().min(0).max(100).optional().nullable(),
 });
 
 export const invoiceTemplateSchema = z.object({
@@ -482,6 +507,8 @@ export const invoiceTemplateSchema = z.object({
   includePdf: z.boolean().optional(),
   includeUnits: z.boolean().optional(),
   includeQr: z.boolean().optional(),
+  includeLineItemTax: z.boolean().optional(),
+  lineItemTaxLabel: z.string().optional(),
   taxRate: z.number().min(0).max(100).optional(),
   vatRate: z.number().min(0).max(100).optional(),
   dateFormat: z.enum(["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd", "dd.MM.yyyy"]),
@@ -495,6 +522,7 @@ export const getInvoicesSchema = z.object({
     .string()
     .nullable()
     .optional()
+    .describe("Pagination cursor from previous response")
     .openapi({
       description:
         "A cursor for pagination, representing the last item from the previous page.",
@@ -502,20 +530,26 @@ export const getInvoicesSchema = z.object({
       example: "25",
     }),
   sort: z
-    .array(z.string(), z.string())
+    .array(z.string().min(1))
+    .max(2)
+    .min(2)
     .nullable()
     .optional()
+    .describe(
+      "Sort as [column, direction]. Columns: created_at, due_date, issue_date, amount, status, customer, invoice_number. Direction: asc or desc.",
+    )
     .openapi({
       description:
-        "Sorting order as a tuple: [field, direction]. Example: ['createdAt', 'desc'].",
+        "Sort as [column, direction]. Columns: created_at, due_date, issue_date, amount, status, customer, invoice_number. Direction: asc or desc.",
       param: { in: "query" },
-      example: ["createdAt", "desc"],
+      example: ["created_at", "desc"],
     }),
   pageSize: z.coerce
     .number()
     .min(1)
     .max(100)
     .optional()
+    .describe("Number of invoices per page (1-100)")
     .openapi({
       description: "Number of invoices to return per page (1-100).",
       param: { in: "query" },
@@ -525,6 +559,7 @@ export const getInvoicesSchema = z.object({
     .string()
     .nullable()
     .optional()
+    .describe("Search query to filter invoices by text")
     .openapi({
       description: "Search query string to filter invoices by text.",
       param: { in: "query" },
@@ -534,6 +569,7 @@ export const getInvoicesSchema = z.object({
     .string()
     .nullable()
     .optional()
+    .describe("Start date (inclusive) in ISO 8601 format")
     .openapi({
       description:
         "Start date (inclusive) for filtering invoices, in ISO 8601 format.",
@@ -544,6 +580,7 @@ export const getInvoicesSchema = z.object({
     .string()
     .nullable()
     .optional()
+    .describe("End date (inclusive) in ISO 8601 format")
     .openapi({
       description:
         "End date (inclusive) for filtering invoices, in ISO 8601 format.",
@@ -554,6 +591,9 @@ export const getInvoicesSchema = z.object({
     .array(z.string())
     .nullable()
     .optional()
+    .describe(
+      "Filter by invoice status: draft, unpaid, paid, overdue, canceled, scheduled",
+    )
     .openapi({
       description:
         "List of invoice statuses to filter by (e.g., 'paid', 'unpaid', 'overdue').",
@@ -564,10 +604,43 @@ export const getInvoicesSchema = z.object({
     .array(z.string())
     .nullable()
     .optional()
+    .describe("Filter by customer IDs")
     .openapi({
       description: "List of customer IDs to filter invoices.",
       param: { in: "query" },
       example: ["customer-uuid-1", "customer-uuid-2"],
+    }),
+  ids: z
+    .array(z.string())
+    .nullable()
+    .optional()
+    .describe("Filter by specific invoice IDs")
+    .openapi({
+      description: "List of invoice IDs to filter by.",
+      param: { in: "query" },
+      example: ["invoice-uuid-1", "invoice-uuid-2"],
+    }),
+  recurringIds: z
+    .array(z.string())
+    .nullable()
+    .optional()
+    .describe("Filter by recurring series IDs")
+    .openapi({
+      description:
+        "List of recurring series IDs to filter invoices by (shows all invoices from these series).",
+      param: { in: "query" },
+      example: ["recurring-uuid-1", "recurring-uuid-2"],
+    }),
+  recurring: z
+    .boolean()
+    .nullable()
+    .optional()
+    .describe("true = only recurring invoices, false = only non-recurring")
+    .openapi({
+      description:
+        "Filter by recurring status. true = only recurring invoices, false = only non-recurring invoices.",
+      param: { in: "query" },
+      example: true,
     }),
 });
 
@@ -591,6 +664,9 @@ export const invoiceSummarySchema = z
         z.enum(["draft", "overdue", "paid", "unpaid", "canceled", "scheduled"]),
       )
       .optional()
+      .describe(
+        "Filter summary to specific statuses: draft, overdue, paid, unpaid, canceled, scheduled",
+      )
       .openapi({
         description: "Filter summary by invoice statuses",
         example: ["draft", "unpaid"],
@@ -613,6 +689,7 @@ export const updateInvoiceSchema = z.object({
     .optional(),
   paidAt: z.string().nullable().optional(),
   internalNote: z.string().nullable().optional(),
+  scheduledAt: z.string().nullable().optional(),
 });
 
 export const deleteInvoiceSchema = z.object({
@@ -627,7 +704,7 @@ export const deleteInvoiceSchema = z.object({
 export const createInvoiceSchema = z.object({
   id: z.string().uuid(),
   deliveryType: z.enum(["create", "create_and_send", "scheduled"]),
-  scheduledAt: z.string().datetime().optional(),
+  scheduledAt: z.string().datetime({ offset: true }).optional(),
 });
 
 export const remindInvoiceSchema = z.object({
@@ -645,7 +722,7 @@ export const remindInvoiceSchema = z.object({
 
 export const updateScheduledInvoiceSchema = z.object({
   id: z.string().uuid(),
-  scheduledAt: z.string().datetime(),
+  scheduledAt: z.string().datetime({ offset: true }),
 });
 
 export const cancelScheduledInvoiceSchema = z.object({
@@ -733,12 +810,14 @@ export const createInvoiceRequestSchema = z
         ],
       },
     }),
-    dueDate: z.string().openapi({
-      description: "Due date of the invoice in ISO 8601 format",
+    dueDate: z.string().datetime({ offset: true }).optional().openapi({
+      description:
+        "Due date of the invoice in ISO 8601 format. Defaults to issue date + payment terms (30 days) if not provided.",
       example: "2024-06-30T23:59:59.000Z",
     }),
-    issueDate: z.string().openapi({
-      description: "Issue date of the invoice in ISO 8601 format",
+    issueDate: z.string().datetime({ offset: true }).optional().openapi({
+      description:
+        "Issue date of the invoice in ISO 8601 format. Defaults to current date if not provided.",
       example: "2024-06-01T00:00:00.000Z",
     }),
     invoiceNumber: z.string().optional().openapi({
@@ -782,9 +861,9 @@ export const createInvoiceRequestSchema = z
         "How the invoice should be processed: 'create' - finalize immediately, 'create_and_send' - finalize and send to customer, 'scheduled' - schedule for automatic processing at specified date",
       example: "create",
     }),
-    scheduledAt: z.string().datetime().optional().openapi({
+    scheduledAt: z.string().datetime({ offset: true }).optional().openapi({
       description:
-        "Scheduled date of the invoice in ISO 8601 format. Required when deliveryType is 'scheduled'. Must be in the future.",
+        "Scheduled date of the invoice in ISO 8601 format with timezone offset (e.g., Z or +00:00). Required when deliveryType is 'scheduled'. Must be in the future.",
       example: "2024-06-30T23:59:59.000Z",
     }),
   })
@@ -1179,11 +1258,11 @@ export const invoiceResponseSchema = z
         "Invoice number as shown to the customer (auto-generated if not provided)",
       example: "INV-2024-001",
     }),
-    amount: z.number().openapi({
-      description: "Total amount of the invoice",
+    amount: z.number().nullable().openapi({
+      description: "Total amount of the invoice, or null if not yet calculated",
       example: 1500.75,
     }),
-    currency: z.string().openapi({
+    currency: z.string().nullable().openapi({
       description: "Currency code (ISO 4217) for the invoice amount",
       example: "USD",
     }),

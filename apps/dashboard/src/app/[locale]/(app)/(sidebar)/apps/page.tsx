@@ -1,22 +1,31 @@
-import { Apps } from "@/components/apps";
-import { AppsHeader } from "@/components/apps-header";
-import { AppsSkeleton } from "@/components/apps.skeleton";
-import { HydrateClient, getQueryClient, trpc } from "@/trpc/server";
 import type { Metadata } from "next";
+import { ErrorBoundary } from "next/dist/client/components/error-boundary";
 import { Suspense } from "react";
+import { Apps } from "@/components/apps";
+import { AppsSkeleton } from "@/components/apps.skeleton";
+import { AppsHeader } from "@/components/apps-header";
+import { ErrorFallback } from "@/components/error-fallback";
+import {
+  batchPrefetch,
+  getQueryClient,
+  HydrateClient,
+  trpc,
+} from "@/trpc/server";
 
 export const metadata: Metadata = {
   title: "Apps | Midday",
 };
 
 export default async function Page() {
-  const queryClient = getQueryClient();
+  const _queryClient = getQueryClient();
 
-  // Change this to prefetch once this is fixed: https://github.com/trpc/trpc/issues/6632
-  await Promise.all([
-    queryClient.fetchQuery(trpc.apps.get.queryOptions()),
-    queryClient.fetchQuery(trpc.oauthApplications.list.queryOptions()),
-    queryClient.fetchQuery(trpc.oauthApplications.authorized.queryOptions()),
+  batchPrefetch([
+    trpc.apps.get.queryOptions(),
+    trpc.oauthApplications.list.queryOptions(),
+    trpc.oauthApplications.authorized.queryOptions(),
+    trpc.inboxAccounts.get.queryOptions(),
+    trpc.invoicePayments.stripeStatus.queryOptions(),
+    trpc.connectors.list.queryOptions(),
   ]);
 
   return (
@@ -24,9 +33,11 @@ export default async function Page() {
       <div className="mt-4">
         <AppsHeader />
 
-        <Suspense fallback={<AppsSkeleton />}>
-          <Apps />
-        </Suspense>
+        <ErrorBoundary errorComponent={ErrorFallback}>
+          <Suspense fallback={<AppsSkeleton />}>
+            <Apps />
+          </Suspense>
+        </ErrorBoundary>
       </div>
     </HydrateClient>
   );

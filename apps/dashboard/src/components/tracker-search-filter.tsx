@@ -1,8 +1,5 @@
 "use client";
 
-import { generateTrackerFilters } from "@/actions/ai/filters/generate-tracker-filters";
-import { useTrackerFilterParams } from "@/hooks/use-tracker-filter-params";
-import { useTRPC } from "@/trpc/client";
 import { Calendar } from "@midday/ui/calendar";
 import { cn } from "@midday/ui/cn";
 import {
@@ -20,10 +17,12 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { Input } from "@midday/ui/input";
 import { useQuery } from "@tanstack/react-query";
-import { readStreamableValue } from "ai/rsc";
-import { formatISO } from "date-fns";
+import { formatISO, parseISO } from "date-fns";
 import { useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { useTrackerFilterParams } from "@/hooks/use-tracker-filter-params";
+import { useUserQuery } from "@/hooks/use-user";
+import { useTRPC } from "@/trpc/client";
 import { FilterList } from "./filter-list";
 
 const statusFilters = [
@@ -32,12 +31,12 @@ const statusFilters = [
 ];
 
 export function TrackerSearchFilter() {
-  const [prompt, setPrompt] = useState("");
+  const [input, setInput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
-  const [streaming, setStreaming] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const trpc = useTRPC();
+  const { data: user } = useUserQuery();
 
   const { filter, setFilter } = useTrackerFilterParams();
 
@@ -61,13 +60,13 @@ export function TrackerSearchFilter() {
   useHotkeys(
     "esc",
     () => {
-      setPrompt("");
+      setInput("");
       setFilter(null);
       setIsOpen(false);
     },
     {
       enableOnFormTags: true,
-      enabled: Boolean(prompt) && isFocused,
+      enabled: Boolean(input) && isFocused,
     },
   );
 
@@ -80,58 +79,16 @@ export function TrackerSearchFilter() {
     const value = evt.target.value;
 
     if (value) {
-      setPrompt(value);
+      setInput(value);
     } else {
       setFilter(null);
-      setPrompt("");
+      setInput("");
     }
   };
 
-  const handleSubmit = async () => {
-    // If the user is typing a query with multiple words, we want to stream the results
-    if (prompt.split(" ").length > 1) {
-      setStreaming(true);
-
-      const { object } = await generateTrackerFilters(
-        prompt,
-        `
-        Customers: ${customersData?.data?.map((customer) => customer.name).join(", ")}
-        Tags: ${tagsData?.map((tag) => tag.name).join(", ")}
-        `,
-      );
-
-      let finalObject = {};
-
-      for await (const partialObject of readStreamableValue(object)) {
-        if (partialObject) {
-          finalObject = {
-            ...finalObject,
-            ...partialObject,
-            status: partialObject?.status ?? null,
-            start: partialObject?.start ?? null,
-            end: partialObject?.end ?? null,
-            q: partialObject?.name ?? null,
-            tags: partialObject?.tags ?? null,
-            customers:
-              partialObject?.customers?.map(
-                (name: string) =>
-                  customersData?.data?.find(
-                    (customer) => customer.name === name,
-                  )?.id,
-              ) ?? null,
-          };
-        }
-      }
-
-      setFilter({
-        q: null,
-        ...finalObject,
-      });
-
-      setStreaming(false);
-    } else {
-      setFilter({ q: prompt.length > 0 ? prompt : null });
-    }
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setFilter({ q: input.length > 0 ? input : null });
   };
 
   const validFilters = Object.fromEntries(
@@ -152,7 +109,6 @@ export function TrackerSearchFilter() {
       <div className="flex space-x-4 items-center">
         <FilterList
           filters={validFilters}
-          loading={streaming}
           onRemove={setFilter}
           members={members}
           customers={customersData?.data}
@@ -170,9 +126,9 @@ export function TrackerSearchFilter() {
           <Icons.Search className="absolute pointer-events-none left-3 top-[11px]" />
           <Input
             ref={inputRef}
-            placeholder="Search or type filter"
+            placeholder="Search projects..."
             className="pl-9 w-full md:w-[350px] pr-8"
-            value={prompt}
+            value={input}
             onChange={handleSearch}
             autoComplete="off"
             autoCapitalize="none"
@@ -220,14 +176,15 @@ export function TrackerSearchFilter() {
                 <Calendar
                   mode="range"
                   initialFocus
+                  weekStartsOn={user?.weekStartsOnMonday ? 1 : 0}
                   toDate={new Date()}
                   selected={
                     filter.start || filter.end
                       ? {
                           from: filter.start
-                            ? new Date(filter.start)
+                            ? parseISO(filter.start)
                             : undefined,
-                          to: filter.end ? new Date(filter.end) : undefined,
+                          to: filter.end ? parseISO(filter.end) : undefined,
                         }
                       : undefined
                   }
@@ -267,6 +224,7 @@ export function TrackerSearchFilter() {
                   <DropdownMenuCheckboxItem
                     key={id}
                     checked={filter?.status === id}
+                    onSelect={(e) => e.preventDefault()}
                     onCheckedChange={() => {
                       setFilter({
                         status: id as "completed" | "in_progress" | null,
@@ -296,6 +254,7 @@ export function TrackerSearchFilter() {
                 {customersData?.data?.map((customer) => (
                   <DropdownMenuCheckboxItem
                     key={customer.id}
+                    onSelect={(e) => e.preventDefault()}
                     onCheckedChange={() => {
                       setFilter({
                         customers: filter?.customers?.includes(customer.id)
@@ -333,6 +292,7 @@ export function TrackerSearchFilter() {
                 {tagsData?.map((tag) => (
                   <DropdownMenuCheckboxItem
                     key={tag.id}
+                    onSelect={(e) => e.preventDefault()}
                     onCheckedChange={() => {
                       setFilter({
                         tags: filter?.tags?.includes(tag.id)

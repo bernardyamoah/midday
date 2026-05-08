@@ -10,21 +10,22 @@
     "./embeddings": "./src/embeddings.ts"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "test": "jest",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit",
     "migrate": "tsx scripts/migrate.ts",
     "migrate:preview": "tsx scripts/migrate.ts --command preview",
     "migrate:run": "tsx scripts/migrate.ts --command migrate"
   },
   "dependencies": {
-    "zod": "^4.1.5",
-    "ai": "5.0.29",
-    "@ai-sdk/google": "^2.0.11",
-    "@midday/logger": "workspace:*"
+    "@ai-sdk/google": "catalog:",
+    "@midday/logger": "workspace:*",
+    "ai": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^24.3.0",
-    "typescript": "^5.9.2"
+    "@types/bun": "latest",
+    "@types/node": "^25.5.0",
+    "typescript": "catalog:"
   }
 }

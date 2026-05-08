@@ -1,6 +1,5 @@
 "use client";
 
-import { useTRPC } from "@/trpc/client";
 import { Badge } from "@midday/ui/badge";
 import { cn } from "@midday/ui/cn";
 import {
@@ -15,6 +14,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@midday/ui/popover";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check } from "lucide-react";
 import { useState } from "react";
+import { useTransactionTableContextOptional } from "@/components/tables/transactions/transaction-table-context";
+import { useTRPC } from "@/trpc/client";
 
 type Tag = {
   id: string;
@@ -31,7 +32,15 @@ export function InlineSelectTags({ transactionId, tags = [] }: Props) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
 
-  const { data: allTags } = useQuery(trpc.tags.get.queryOptions());
+  // Use shared context when available (inside transaction table), fallback to direct query
+  const tableContext = useTransactionTableContextOptional();
+  const { data: fallbackTags } = useQuery({
+    ...trpc.tags.get.queryOptions(),
+    // Skip query if we have context data (already fetched by provider)
+    enabled: !tableContext,
+  });
+
+  const allTags = tableContext?.tags ?? fallbackTags;
 
   const createTransactionTagMutation = useMutation(
     trpc.transactionTags.create.mutationOptions({

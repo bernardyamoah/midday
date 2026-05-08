@@ -1,11 +1,6 @@
 "use client";
 
-import { exportTransactionsAction } from "@/actions/export-transactions-action";
-import { useTeamMutation, useTeamQuery } from "@/hooks/use-team";
-import { useUserQuery } from "@/hooks/use-user";
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useExportStore } from "@/store/export";
-import { useTransactionsStore } from "@/store/transactions";
+import { LogEvents } from "@midday/events/events";
 import {
   Accordion,
   AccordionContent,
@@ -34,9 +29,17 @@ import { Separator } from "@midday/ui/separator";
 import { Spinner } from "@midday/ui/spinner";
 import { Switch } from "@midday/ui/switch";
 import NumberFlow from "@number-flow/react";
-import { useAction } from "next-safe-action/hooks";
-import { useEffect } from "react";
-import { z } from "zod";
+import { useOpenPanel } from "@openpanel/nextjs";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo } from "react";
+import { z } from "zod/v3";
+import { useJobStatus } from "@/hooks/use-job-status";
+import { useTeamMutation, useTeamQuery } from "@/hooks/use-team";
+import { useUserQuery } from "@/hooks/use-user";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useExportStore } from "@/store/export";
+import { useTransactionsStore } from "@/store/transactions";
+import { useTRPC } from "@/trpc/client";
 
 const exportSettingsSchema = z
   .object({
@@ -44,6 +47,7 @@ const exportSettingsSchema = z
     includeCSV: z.boolean(),
     includeXLSX: z.boolean(),
     sendEmail: z.boolean(),
+    sendCopyToMe: z.boolean().optional().default(false),
     accountantEmail: z.string().optional(),
   })
   .refine(
@@ -52,7 +56,6 @@ const exportSettingsSchema = z
         if (!data.accountantEmail || data.accountantEmail.trim() === "") {
           return false;
         }
-
         return z.string().email().safeParse(data.accountantEmail.trim())
           .success;
       }
@@ -67,6 +70,15 @@ const exportSettingsSchema = z
     message: "Please select at least one export format",
   });
 
+const exportSettingsDefaults = {
+  csvDelimiter: ",",
+  includeCSV: true,
+  includeXLSX: true,
+  sendEmail: false,
+  sendCopyToMe: false,
+  accountantEmail: "",
+};
+
 interface ExportTransactionsModalProps {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
@@ -76,91 +88,140 @@ export function ExportTransactionsModal({
   isOpen,
   onOpenChange,
 }: ExportTransactionsModalProps) {
-  const { setExportData, setIsExporting } = useExportStore();
-  const { rowSelection, setRowSelection } = useTransactionsStore();
+  const { exportData, setExportData, setIsExporting } = useExportStore();
+  const { track } = useOpenPanel();
+  const { rowSelectionByTab, setRowSelection } = useTransactionsStore();
+  // Export modal is used from review tab, so use review tab selection
+  const rowSelection = rowSelectionByTab.review;
   const { data: user } = useUserQuery();
   const { data: team } = useTeamQuery();
   const teamMutation = useTeamMutation();
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  // Get transaction IDs - only manually selected transactions
+  const transactionIds = useMemo(() => {
+    return Object.keys(rowSelection);
+  }, [rowSelection]);
 
-  const ids = Object.keys(rowSelection);
-  const totalSelected = ids.length;
+  const totalCount = transactionIds.length;
 
-  // Load saved settings from team
-  const savedSettings = (team?.exportSettings as z.infer<
-    typeof exportSettingsSchema
-  >) || {
-    csvDelimiter: ",",
-    includeCSV: true,
-    includeXLSX: true,
-    sendEmail: false,
-    accountantEmail: "",
-  };
+  const { status: jobStatus } = useJobStatus({
+    jobId: exportData?.runId,
+    enabled: !!exportData?.runId && isOpen,
+  });
+
+  // Handle job completion/failure
+  useEffect(() => {
+    if (jobStatus === "completed") {
+      setIsExporting(false);
+      // Invalidate queries to refresh data
+      queryClient.invalidateQueries({
+        queryKey: trpc.transactions.get.infiniteQueryKey(),
+      });
+      queryClient.invalidateQueries({
+        queryKey: trpc.transactions.getReviewCount.queryKey(),
+      });
+      // Delay clearing exportData to allow export bar to show completion
+      setTimeout(() => {
+        setExportData(undefined);
+      }, 2000);
+      onOpenChange(false);
+    } else if (jobStatus === "failed") {
+      setIsExporting(false);
+      setExportData(undefined);
+    }
+  }, [
+    jobStatus,
+    setIsExporting,
+    setExportData,
+    onOpenChange,
+    queryClient,
+    trpc.transactions.get,
+    trpc.transactions.getReviewCount,
+  ]);
+
+  const savedSettings = team?.exportSettings
+    ? {
+        ...exportSettingsDefaults,
+        ...(team.exportSettings as z.infer<typeof exportSettingsSchema>),
+      }
+    : exportSettingsDefaults;
 
   const form = useZodForm(exportSettingsSchema, {
     defaultValues: savedSettings,
     mode: "onChange",
   });
 
-  // Update form when team data changes
   useEffect(() => {
     if (team?.exportSettings) {
-      form.reset(team.exportSettings as z.infer<typeof exportSettingsSchema>);
+      form.reset({
+        ...exportSettingsDefaults,
+        ...(team.exportSettings as z.infer<typeof exportSettingsSchema>),
+      });
     }
   }, [team?.exportSettings, form]);
 
-  const { execute, status } = useAction(exportTransactionsAction, {
-    onSuccess: ({ data }) => {
-      if (data?.id && data?.publicAccessToken) {
-        setExportData({
-          runId: data.id,
-          accessToken: data.publicAccessToken,
-        });
-
-        setRowSelection(() => ({}));
+  // File export mutation
+  const exportMutation = useMutation(
+    trpc.transactions.export.mutationOptions({
+      onSuccess: (data) => {
+        if (data?.id) {
+          setExportData({ runId: data.id, exportType: "file" });
+          setRowSelection("review", {});
+          // Close modal immediately - toast will show progress
+          onOpenChange(false);
+        }
+      },
+      onError: () => {
         setIsExporting(false);
-      }
+      },
+    }),
+  );
 
-      onOpenChange(false);
-    },
-    onError: () => {
-      setIsExporting(false);
-    },
-  });
+  const onFileExport = async (values: z.infer<typeof exportSettingsSchema>) => {
+    if (transactionIds.length === 0) return;
 
-  const onSubmit = async (values: z.infer<typeof exportSettingsSchema>) => {
+    track(LogEvents.ExportTransactions.name, { count: transactionIds.length });
     setIsExporting(true);
 
     await teamMutation.mutateAsync({
       exportSettings: values,
     });
 
-    execute({
-      transactionIds: ids,
+    exportMutation.mutate({
+      transactionIds,
       dateFormat: user?.dateFormat ?? undefined,
       locale: user?.locale ?? undefined,
       exportSettings: values,
     });
   };
 
-  const isExporting = status === "executing";
+  const isExporting =
+    form.formState.isSubmitting ||
+    exportMutation.isPending ||
+    jobStatus === "active" ||
+    jobStatus === "waiting";
+
   const sendEmail = form.watch("sendEmail");
   const includeCSV = form.watch("includeCSV");
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[600px]">
+      <DialogContent className="max-w-[500px]">
         <div className="p-4">
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-              <DialogHeader className="mb-8">
-                <DialogTitle>Export Transactions</DialogTitle>
-                <DialogDescription>
-                  Export <NumberFlow value={totalSelected} /> selected
-                  transactions with your preferred settings. You'll be notified
-                  when ready.
-                </DialogDescription>
-              </DialogHeader>
+          <DialogHeader className="mb-6">
+            <DialogTitle>Export Transactions</DialogTitle>
+            <DialogDescription>
+              Export <NumberFlow value={totalCount} /> transaction
+              {totalCount !== 1 ? "s" : ""} to your vault.
+            </DialogDescription>
+          </DialogHeader>
 
+          <Form {...form}>
+            <form
+              onSubmit={form.handleSubmit(onFileExport)}
+              className="space-y-4"
+            >
               <div className="space-y-3">
                 <FormField
                   control={form.control}
@@ -329,6 +390,28 @@ export function ExportTransactionsModal({
                     )}
                   />
                 )}
+
+                <div className={sendEmail ? undefined : "hidden"}>
+                  <FormField
+                    control={form.control}
+                    name="sendCopyToMe"
+                    render={({ field }) => (
+                      <FormItem>
+                        <div className="flex items-center justify-between">
+                          <FormLabel className="text-sm font-normal">
+                            Send a copy to me
+                          </FormLabel>
+                          <FormControl>
+                            <Switch
+                              checked={field.value}
+                              onCheckedChange={field.onChange}
+                            />
+                          </FormControl>
+                        </div>
+                      </FormItem>
+                    )}
+                  />
+                </div>
               </div>
 
               <Separator />
@@ -347,7 +430,8 @@ export function ExportTransactionsModal({
                   disabled={
                     isExporting ||
                     !form.formState.isValid ||
-                    form.formState.isSubmitting
+                    form.formState.isSubmitting ||
+                    transactionIds.length === 0
                   }
                 >
                   {isExporting ? (

@@ -1,18 +1,6 @@
 "use client";
 
-import { FormatAmount } from "@/components/format-amount";
-import { InvoiceStatus } from "@/components/invoice-status";
-import { useCustomerParams } from "@/hooks/use-customer-params";
-import { useDocumentParams } from "@/hooks/use-document-params";
-import { useInvoiceParams } from "@/hooks/use-invoice-params";
-import { useTrackerParams } from "@/hooks/use-tracker-params";
-import { useTransactionParams } from "@/hooks/use-transaction-params";
-import { useUserQuery } from "@/hooks/use-user";
-import { downloadFile } from "@/lib/download";
-import { useSearchStore } from "@/store/search";
-import { useTRPC } from "@/trpc/client";
-import { formatDate } from "@/utils/format";
-import { Window, emit, invoke, listen } from "@midday/desktop-client/core";
+import { emit, invoke, listen, Window } from "@midday/desktop-client/core";
 import { isDesktopApp } from "@midday/desktop-client/platform";
 import {
   Command,
@@ -24,14 +12,26 @@ import {
 } from "@midday/ui/command";
 import { Icons } from "@midday/ui/icons";
 import { Spinner } from "@midday/ui/spinner";
+import { formatDate } from "@midday/utils/format";
 import { useQuery } from "@tanstack/react-query";
 import { formatISO } from "date-fns";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import { useDebounceValue } from "usehooks-ts";
-import { useCopyToClipboard } from "usehooks-ts";
+import { useCopyToClipboard, useDebounceValue } from "usehooks-ts";
+import { FormatAmount } from "@/components/format-amount";
+import { InvoiceStatus } from "@/components/invoice-status";
+import { useCustomerParams } from "@/hooks/use-customer-params";
+import { useDocumentParams } from "@/hooks/use-document-params";
+import { useFileUrl } from "@/hooks/use-file-url";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { useTrackerParams } from "@/hooks/use-tracker-params";
+import { useTransactionParams } from "@/hooks/use-transaction-params";
+import { useUserQuery } from "@/hooks/use-user";
+import { downloadFile } from "@/lib/download";
+import { useSearchStore } from "@/store/search";
+import { useTRPC } from "@/trpc/client";
 import { FilePreviewIcon } from "../file-preview-icon";
 import { TrackerTimer } from "../tracker-timer";
 
@@ -91,20 +91,43 @@ function CopyButton({ path }: { path: string }) {
 function DownloadButton({
   href,
   filename,
-}: { href: string; filename?: string }) {
+}: {
+  href: string;
+  filename?: string;
+}) {
   const [isDownloading, setIsDownloading] = useState(false);
+
+  const isFileDownload = href.includes("/files/download/file");
+  const isInvoiceDownload = href.includes("/files/download/invoice");
+  const needsAuth = isFileDownload || isInvoiceDownload;
+
+  // Extract invoice ID if it's an invoice download
+  let invoiceId: string | null = null;
+  if (isInvoiceDownload) {
+    try {
+      invoiceId = new URL(href).searchParams.get("id");
+    } catch {
+      // Invalid URL, will fall back to url type
+    }
+  }
+
+  const { url: authenticatedUrl, isLoading } = useFileUrl(
+    needsAuth
+      ? isInvoiceDownload && invoiceId
+        ? { type: "invoice", invoiceId }
+        : { type: "url", url: href }
+      : null,
+  );
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    const url = authenticatedUrl || href;
+    if (!url) return;
 
     try {
       setIsDownloading(true);
-      await downloadFile(href, filename || "download");
-
-      // Keep spinner for 1 second
-      setTimeout(() => {
-        setIsDownloading(false);
-      }, 1000);
+      await downloadFile(url, filename || "download");
+      setTimeout(() => setIsDownloading(false), 1000);
     } catch (error) {
       console.error("Download failed:", error);
       setIsDownloading(false);
@@ -112,8 +135,14 @@ function DownloadButton({
   };
 
   return (
-    <button type="button" onClick={handleDownload}>
-      {isDownloading ? (
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={
+        isDownloading || (needsAuth && (!authenticatedUrl || isLoading))
+      }
+    >
+      {isDownloading || isLoading ? (
         <Spinner size={16} />
       ) : (
         <Icons.ArrowCoolDown className="size-4 dark:text-[#666] text-primary hover:!text-primary cursor-pointer" />
@@ -157,7 +186,7 @@ const handleDesktopNavigation = async (
     const mainWindow = await Window.getByLabel("main");
 
     if (!mainWindow) {
-      console.error("❌ Main window not found for navigation");
+      console.error("Main window not found for navigation");
       return false;
     }
 
@@ -182,7 +211,7 @@ const handleDesktopNavigation = async (
 
     return true;
   } catch (error) {
-    console.error("❌ Failed to handle desktop navigation:", error);
+    console.error("Failed to handle desktop navigation:", error);
     return false;
   }
 };
@@ -251,7 +280,7 @@ const useSearchNavigation = () => {
     },
     navigateToInvoice: (params: {
       invoiceId: string;
-      type: "details" | "create" | "edit" | "success";
+      invoiceType: "details" | "create" | "edit" | "success";
     }) => {
       return navigateWithParams(params, setInvoiceParams);
     },
@@ -274,7 +303,10 @@ const useSearchNavigation = () => {
     },
     // Action helpers
     createInvoice: () => {
-      return navigateWithParams({ type: "create" as const }, setInvoiceParams);
+      return navigateWithParams(
+        { invoiceType: "create" as const },
+        setInvoiceParams,
+      );
     },
     createCustomer: (params = { createCustomer: true }) => {
       return navigateWithParams(params, setCustomerParams);
@@ -301,7 +333,10 @@ const useSearchNavigation = () => {
 const SearchResultItemDisplay = ({
   item,
   dateFormat,
-}: { item: SearchItem; dateFormat?: string }) => {
+}: {
+  item: SearchItem;
+  dateFormat?: string;
+}) => {
   const nav = useSearchNavigation();
 
   let icon: ReactNode | undefined;
@@ -338,7 +373,7 @@ const SearchResultItemDisplay = ({
             <div className="flex items-center gap-2 invisible group-hover/item:visible group-focus/item:visible group-aria-selected/item:visible">
               <CopyButton path={`?documentId=${item.id}`} />
               <DownloadButton
-                href={`/api/download/file?path=${item.data?.path_tokens?.join("/")}&filename=${
+                href={`${process.env.NEXT_PUBLIC_API_URL}/files/download/file?path=${item.data?.path_tokens?.join("/")}&filename=${
                   (item.data?.title ||
                     (item.data?.name as string)?.split("/").at(-1) ||
                     "") as string
@@ -380,7 +415,7 @@ const SearchResultItemDisplay = ({
       }
       case "invoice": {
         onSelect = () =>
-          nav.navigateToInvoice({ invoiceId: item.id, type: "details" });
+          nav.navigateToInvoice({ invoiceId: item.id, invoiceType: "details" });
 
         icon = (
           <Icons.Invoice className="size-4 dark:text-[#666] text-primary" />
@@ -393,9 +428,9 @@ const SearchResultItemDisplay = ({
               <InvoiceStatus status={item.data?.status} />
             </div>
             <div className="flex items-center gap-2 invisible group-hover/item:visible group-focus/item:visible group-aria-selected/item:visible">
-              <CopyButton path={`?invoiceId=${item.id}&type=details`} />
+              <CopyButton path={`?invoiceId=${item.id}&invoiceType=details`} />
               <DownloadButton
-                href={`/api/download/invoice?id=${item.id}&size=${item?.data?.template?.size}`}
+                href={`${process.env.NEXT_PUBLIC_API_URL}/files/download/invoice?id=${item.id}&size=${item?.data?.template?.size}`}
                 filename={`${item.data.invoice_number || "invoice"}.pdf`}
               />
               <Icons.ArrowOutward className="size-4 dark:text-[#666] text-primary hover:!text-primary cursor-pointer" />
@@ -435,7 +470,7 @@ const SearchResultItemDisplay = ({
             <div className="flex items-center gap-2 invisible group-hover/item:visible group-focus/item:visible group-aria-selected/item:visible">
               <CopyButton path={`/inbox?inboxId=${item.id}`} />
               <DownloadButton
-                href={`/api/download/file?path=${item.data?.file_path?.join("/")}&filename=${item.data?.file_name || ""}`}
+                href={`${process.env.NEXT_PUBLIC_API_URL}/files/download/file?path=${item.data?.file_path?.join("/")}&filename=${item.data?.file_name || ""}`}
                 filename={item.data?.file_name || "download"}
               />
               <Icons.ArrowOutward className="size-4 dark:text-[#666] text-primary hover:!text-primary cursor-pointer" />
@@ -791,7 +826,7 @@ export function Search() {
   return (
     <Command
       shouldFilter={false}
-      className="search-container overflow-hidden p-0 relative w-full bg-background backdrop-filter dark:border-[#2C2C2C] backdrop-blur-lg dark:bg-[#151515]/[99] h-auto border border-border"
+      className="search-container overflow-hidden p-0 relative w-full bg-background backdrop-filter backdrop-blur-lg dark:bg-[#0C0C0C]/[99] h-auto border border-border"
     >
       <div className="border-b border-border relative">
         <CommandInput

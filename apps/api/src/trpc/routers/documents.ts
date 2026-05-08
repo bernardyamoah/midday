@@ -4,6 +4,7 @@ import {
   getDocumentsSchema,
   getRelatedDocumentsSchema,
   processDocumentSchema,
+  reprocessDocumentSchema,
   signedUrlSchema,
   signedUrlsSchema,
 } from "@api/schemas/documents";
@@ -14,12 +15,12 @@ import {
   getDocumentById,
   getDocuments,
   getRelatedDocuments,
+  updateDocumentProcessingStatus,
   updateDocuments,
 } from "@midday/db/queries";
 import { isMimeTypeSupportedForProcessing } from "@midday/documents/utils";
-import type { ProcessDocumentPayload } from "@midday/jobs/schema";
+import { triggerJob } from "@midday/job-client";
 import { remove, signedUrl } from "@midday/supabase/storage";
-import { tasks } from "@trigger.dev/sdk";
 import { TRPCError } from "@trpc/server";
 
 export const documentsRouter = createTRPCRouter({
@@ -71,7 +72,7 @@ export const documentsRouter = createTRPCRouter({
         teamId: teamId!,
       });
 
-      if (!document || !document.pathTokens) {
+      if (!document?.pathTokens) {
         throw new TRPCError({
           code: "NOT_FOUND",
           message: "Document not found",
@@ -114,20 +115,100 @@ export const documentsRouter = createTRPCRouter({
         return;
       }
 
-      // Trigger processing task only for supported documents
-      return tasks.batchTrigger(
-        "process-document",
-        supportedDocuments.map(
-          (item) =>
-            ({
-              payload: {
-                filePath: item.filePath,
-                mimetype: item.mimetype,
-                teamId: teamId!,
-              },
-            }) as { payload: ProcessDocumentPayload },
+      // Trigger BullMQ jobs for each supported document
+      // Use deterministic jobId based on teamId:filePath for deduplication
+      const jobResults = await Promise.all(
+        supportedDocuments.map((item) =>
+          triggerJob(
+            "process-document",
+            {
+              filePath: item.filePath,
+              mimetype: item.mimetype,
+              teamId: teamId!,
+            },
+            "documents",
+            { jobId: `process-doc_${teamId}_${item.filePath.join("/")}` },
+          ),
         ),
       );
+
+      return {
+        jobs: jobResults.map((result) => ({ id: result.id })),
+      };
+    }),
+
+  reprocessDocument: protectedProcedure
+    .input(reprocessDocumentSchema)
+    .mutation(async ({ ctx: { teamId, db }, input }) => {
+      // Get the document to reprocess
+      const document = await getDocumentById(db, {
+        id: input.id,
+        teamId: teamId!,
+      });
+
+      if (!document) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Document not found",
+        });
+      }
+
+      // Get mimetype from metadata
+      const mimetype =
+        (document.metadata as { mimetype?: string })?.mimetype ??
+        "application/octet-stream";
+
+      // Validate pathTokens exists - required for job processing
+      if (!document.pathTokens || document.pathTokens.length === 0) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Document has no file path and cannot be reprocessed",
+        });
+      }
+
+      // Check if it's a supported file type
+      if (!isMimeTypeSupportedForProcessing(mimetype)) {
+        // Mark unsupported files as completed
+        await updateDocumentProcessingStatus(db, {
+          id: input.id,
+          processingStatus: "completed",
+        });
+        return {
+          success: true,
+          skipped: true,
+          document: { id: input.id, processingStatus: "completed" as const },
+        };
+      }
+
+      // Reset status to pending
+      await updateDocumentProcessingStatus(db, {
+        id: input.id,
+        processingStatus: "pending",
+      });
+
+      // Trigger reprocessing with unique jobId (includes timestamp)
+      // Unlike initial processing which uses deterministic IDs to prevent duplicate uploads,
+      // reprocessing MUST use unique IDs because BullMQ won't create a new job if an ID exists.
+      // Completed jobs are retained for 24h and failed for 7 days, so deterministic IDs
+      // would cause retries within these windows to silently fail (returns existing job).
+      const jobResult = await triggerJob(
+        "process-document",
+        {
+          filePath: document.pathTokens,
+          mimetype,
+          teamId: teamId!,
+        },
+        "documents",
+        {
+          jobId: `reprocess-doc_${teamId}_${document.pathTokens.join("/")}_${Date.now()}`,
+        },
+      );
+
+      return {
+        success: true,
+        jobId: jobResult.id,
+        document: { id: input.id, processingStatus: "pending" as const },
+      };
     }),
 
   signedUrl: protectedProcedure
@@ -145,20 +226,18 @@ export const documentsRouter = createTRPCRouter({
   signedUrls: protectedProcedure
     .input(signedUrlsSchema)
     .mutation(async ({ input, ctx: { supabase } }) => {
-      const signedUrls = [];
+      const results = await Promise.all(
+        input.map((filePath) =>
+          signedUrl(supabase, {
+            bucket: "vault",
+            path: filePath,
+            expireIn: 60,
+          }),
+        ),
+      );
 
-      for (const filePath of input) {
-        const { data } = await signedUrl(supabase, {
-          bucket: "vault",
-          path: filePath,
-          expireIn: 60, // 1 Minute
-        });
-
-        if (data?.signedUrl) {
-          signedUrls.push(data.signedUrl);
-        }
-      }
-
-      return signedUrls ?? [];
+      return results
+        .map((r) => r.data?.signedUrl)
+        .filter((url): url is string => !!url);
     }),
 });

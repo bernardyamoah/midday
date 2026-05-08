@@ -1,7 +1,5 @@
 "use client";
 
-import { useSyncStatus } from "@/hooks/use-sync-status";
-import { useTRPC } from "@/trpc/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { Avatar, AvatarFallback } from "@midday/ui/avatar";
 import { Badge } from "@midday/ui/badge";
@@ -28,8 +26,12 @@ import {
 } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
+import { useSyncStatus } from "@/hooks/use-sync-status";
+import { useTRPC } from "@/trpc/client";
+import { ConnectEmailModal } from "./connect-email-modal";
+import { ConnectGmail } from "./connect-gmail";
+import { ConnectOutlook } from "./connect-outlook";
 import { DeleteInboxAccount } from "./delete-inbox-account";
 import { InboxAccountsListSkeleton } from "./inbox-connected-accounts-skeleton";
 import { SyncInboxAccount } from "./sync-inbox-account";
@@ -155,27 +157,37 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
       <div className="flex items-center space-x-4">
         <Avatar className="size-[34px]">
           <AvatarFallback className="bg-white border border-border">
-            <Icons.Gmail className="size-5" />
+            {account.provider === "outlook" ? (
+              <Icons.Outlook className="size-5" />
+            ) : (
+              <Icons.Gmail className="size-5" />
+            )}
           </AvatarFallback>
         </Avatar>
         <div className="flex flex-col">
           <div className="flex items-center space-x-2">
             <span className="text-sm font-medium">{account.email}</span>
             {isDisconnected && (
-              <Tooltip delayDuration={0}>
-                <TooltipTrigger asChild>
-                  <Badge variant="tag-rounded" className="text-xs cursor-help">
-                    Disconnected
-                  </Badge>
-                </TooltipTrigger>
-                <TooltipContent className="max-w-[300px] text-xs">
-                  <p>
-                    Account access has expired. Google typically expires access
-                    tokens after 6 months as part of their security practices.
-                    Simply reconnect to restore functionality.
-                  </p>
-                </TooltipContent>
-              </Tooltip>
+              <TooltipProvider delayDuration={0}>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge
+                      variant="tag-rounded"
+                      className="text-xs cursor-help"
+                    >
+                      Disconnected
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent className="max-w-[300px] text-xs">
+                    <p>
+                      Account access has expired. Email providers typically
+                      expire access tokens periodically as part of their
+                      security practices. Simply reconnect to restore
+                      functionality.
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )}
           </div>
           <span className="text-muted-foreground text-xs">
@@ -196,7 +208,11 @@ function InboxAccountItem({ account }: { account: InboxAccount }) {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => connectMutation.mutate({ provider: "gmail" })}
+            onClick={() =>
+              connectMutation.mutate({
+                provider: account.provider as "gmail" | "outlook",
+              })
+            }
             className="text-xs"
           >
             Reconnect
@@ -219,10 +235,11 @@ function InboxAccountsList() {
 
   if (!data?.length) {
     return (
-      <div className="px-6 py-8 text-center">
-        <p className="text-muted-foreground text-sm">
-          No inbox connections found.
-        </p>
+      <div className="px-6 py-8 pb-12 text-center flex flex-col items-center">
+        <div className="w-full max-w-[300px] flex flex-col space-y-3">
+          <ConnectGmail />
+          <ConnectOutlook />
+        </div>
       </div>
     );
   }
@@ -238,17 +255,7 @@ function InboxAccountsList() {
 
 export function InboxConnectedAccounts() {
   const trpc = useTRPC();
-  const router = useRouter();
-
-  const connectMutation = useMutation(
-    trpc.inboxAccounts.connect.mutationOptions({
-      onSuccess: (authUrl: string | null) => {
-        if (authUrl) {
-          router.push(authUrl);
-        }
-      },
-    }),
-  );
+  const { data } = useSuspenseQuery(trpc.inboxAccounts.get.queryOptions());
 
   return (
     <Card>
@@ -265,18 +272,17 @@ export function InboxConnectedAccounts() {
         <InboxAccountsList />
       </Suspense>
 
-      <CardFooter className="flex justify-between">
-        <div />
+      {data?.length > 0 && (
+        <CardFooter className="flex justify-between">
+          <div />
 
-        <Button
-          onClick={() => connectMutation.mutate({ provider: "gmail" })}
-          disabled={connectMutation.isPending}
-          data-event="Connect email"
-          data-channel="email"
-        >
-          Connect email
-        </Button>
-      </CardFooter>
+          <ConnectEmailModal>
+            <Button data-event="Connect email" data-channel="email">
+              Connect email
+            </Button>
+          </ConnectEmailModal>
+        </CardFooter>
+      )}
     </Card>
   );
 }

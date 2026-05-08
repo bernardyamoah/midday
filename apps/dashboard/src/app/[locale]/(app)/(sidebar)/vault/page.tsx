@@ -1,11 +1,15 @@
+import type { Metadata } from "next";
+import { ErrorBoundary } from "next/dist/client/components/error-boundary";
+import type { SearchParams } from "nuqs/server";
+import { Suspense } from "react";
+import { ErrorFallback } from "@/components/error-fallback";
+import { ScrollableContent } from "@/components/scrollable-content";
 import { VaultHeader } from "@/components/vault/vault-header";
 import { VaultSkeleton } from "@/components/vault/vault-skeleton";
 import { VaultView } from "@/components/vault/vault-view";
 import { loadDocumentFilterParams } from "@/hooks/use-document-filter-params";
 import { prefetch, trpc } from "@/trpc/server";
-import type { Metadata } from "next";
-import type { SearchParams } from "nuqs/server";
-import { Suspense } from "react";
+import { getInitialTableSettings } from "@/utils/columns";
 
 export const metadata: Metadata = {
   title: "Vault | Midday",
@@ -20,20 +24,29 @@ export default async function Page(props: Props) {
 
   const filter = loadDocumentFilterParams(searchParams);
 
+  const initialSettings = await getInitialTableSettings("vault");
+
   prefetch(
-    trpc.documents.get.infiniteQueryOptions({
-      ...filter,
-      pageSize: 20,
-    }),
+    trpc.documents.get.infiniteQueryOptions(
+      {
+        ...filter,
+        pageSize: 24,
+      },
+      {
+        getNextPageParam: ({ meta }) => meta?.cursor,
+      },
+    ),
   );
 
   return (
-    <div>
+    <ScrollableContent>
       <VaultHeader />
 
-      <Suspense fallback={<VaultSkeleton />}>
-        <VaultView />
-      </Suspense>
-    </div>
+      <ErrorBoundary errorComponent={ErrorFallback}>
+        <Suspense fallback={<VaultSkeleton />}>
+          <VaultView initialSettings={initialSettings} />
+        </Suspense>
+      </ErrorBoundary>
+    </ScrollableContent>
   );
 }

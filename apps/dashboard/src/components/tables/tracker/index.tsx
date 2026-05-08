@@ -1,15 +1,18 @@
 "use client";
 
+import { LogEvents } from "@midday/events/events";
+import { Table, TableBody } from "@midday/ui/table";
+import { useOpenPanel } from "@openpanel/nextjs";
+import { useMutation, useSuspenseInfiniteQuery } from "@tanstack/react-query";
+import { useDeferredValue, useEffect } from "react";
+import { useInView } from "react-intersection-observer";
 import { LoadMore } from "@/components/load-more";
 import { useLatestProjectId } from "@/hooks/use-latest-project-id";
 import { useSortParams } from "@/hooks/use-sort-params";
 import { useTableScroll } from "@/hooks/use-table-scroll";
 import { useTrackerFilterParams } from "@/hooks/use-tracker-filter-params";
+import { useUserQuery } from "@/hooks/use-user";
 import { useTRPC } from "@/trpc/client";
-import { Table, TableBody } from "@midday/ui/table";
-import { useMutation, useSuspenseInfiniteQuery } from "@tanstack/react-query";
-import { useDeferredValue, useEffect } from "react";
-import { useInView } from "react-intersection-observer";
 import { DataTableHeader } from "./data-table-header";
 import { DataTableRow } from "./data-table-row";
 import { EmptyState, NoResults } from "./empty-states";
@@ -17,7 +20,11 @@ import { EmptyState, NoResults } from "./empty-states";
 export function DataTable() {
   const trpc = useTRPC();
   const { ref, inView } = useInView();
-  const { latestProjectId, setLatestProjectId } = useLatestProjectId();
+  const { track } = useOpenPanel();
+  const { data: user } = useUserQuery();
+  const { latestProjectId, setLatestProjectId } = useLatestProjectId(
+    user?.teamId,
+  );
   const { params } = useSortParams();
   const { hasFilters, filter } = useTrackerFilterParams();
   const deferredSearch = useDeferredValue(filter.q);
@@ -44,6 +51,8 @@ export function DataTable() {
   const deleteTrackerProjectMutation = useMutation(
     trpc.trackerProjects.delete.mutationOptions({
       onSuccess: (result) => {
+        track(LogEvents.TrackerProjectDeleted.name);
+
         if (result && result.id === latestProjectId) {
           setLatestProjectId(null);
         }

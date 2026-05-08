@@ -23,7 +23,7 @@ Avatar.displayName = AvatarPrimitive.Root.displayName;
 export const AvatarImageNext = React.forwardRef<
   React.ElementRef<typeof Image>,
   React.ComponentPropsWithoutRef<typeof Image>
->(({ className, onError, ...props }, ref) => {
+>(({ className, onError, onLoad, ...props }, ref) => {
   const [hasError, setHasError] = React.useState(false);
 
   if (hasError || !props.src) {
@@ -38,6 +38,7 @@ export const AvatarImageNext = React.forwardRef<
         setHasError(true);
         onError?.(e);
       }}
+      onLoad={onLoad}
       {...props}
     />
   );
@@ -72,4 +73,4 @@ const AvatarFallback = React.forwardRef<
 ));
 AvatarFallback.displayName = AvatarPrimitive.Fallback.displayName;
 
-export { Avatar, AvatarImage, AvatarFallback };
+export { Avatar, AvatarFallback, AvatarImage };

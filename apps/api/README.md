@@ -8,10 +8,17 @@ The API requires the following environment variables:
 ```bash
 # Local development (Docker):
 REDIS_URL=redis://localhost:6379
+REDIS_QUEUE_URL=redis://localhost:6379
 
-# Production (Upstash Redis via Fly.io):
-# REDIS_URL=rediss://:password@fly-midday-redis.upstash.io:6379
+# Production:
+# REDIS_URL=rediss://:password@...upstash.io:6379 (Upstash multi-region)
+# REDIS_QUEUE_URL=redis://...railway.internal:6379 (Railway Redis - BullMQ queue)
 ```
+
+Two separate Redis instances are used:
+
+- **`REDIS_URL`** — Upstash multi-region Redis for caching. Upstash automatically routes reads to the nearest replica and writes to the primary. A single URL works across all Railway regions.
+- **`REDIS_QUEUE_URL`** — Railway internal Redis for BullMQ job queues. Kept on Railway because BullMQ requires persistent TCP connections with blocking operations that aren't compatible with Upstash.
 
 #### Local Development Setup
 
@@ -25,15 +32,12 @@ REDIS_URL=redis://localhost:6379
    export REDIS_URL=redis://localhost:6379
    ```
 
-3. **Test Redis connection:**
-   ```bash
-   bun run packages/cache/src/test-redis.ts
-   ```
-
 #### Database Configuration
 ```bash
-DATABASE_URL=postgresql://...
-DATABASE_READ_URL=postgresql://... # Optional: read replica URL
+DATABASE_PRIMARY_URL=postgresql://...
+DATABASE_FRA_URL=postgresql://...  # EU replica
+DATABASE_IAD_URL=postgresql://...  # US East replica
+DATABASE_SJC_URL=postgresql://...  # US West replica
 ```
 
 ### Development
@@ -50,7 +54,7 @@ bun start
 
 ### Cache Implementation
 
-The API uses Redis for distributed caching across multiple server instances:
+The API uses Upstash multi-region Redis for distributed caching across all server regions:
 
 - **apiKeyCache**: Caches API key lookups (30 min TTL)
 - **userCache**: Caches user data (30 min TTL)
@@ -58,20 +62,4 @@ The API uses Redis for distributed caching across multiple server instances:
 - **teamPermissionsCache**: Caches team permission lookups (30 min TTL)
 - **replicationCache**: Tracks recent mutations for read-after-write consistency (10 sec TTL)
 
-#### Environment-Specific Configuration
-
-The Redis client automatically configures itself based on the environment:
-
-**Production (Fly.io):**
-- Handles IPv6 connections
-- Longer connection timeouts (10s)
-- Higher retry attempts (10)
-- TLS support for Upstash Redis
-
-**Development (Local):**
-- IPv4 connections
-- Shorter timeouts (5s)
-- Fewer retries (3)
-- No idle timeout
-
-This ensures cache consistency across multiple stateful servers and eliminates the "No procedure found" TRPC errors caused by cache misses.
+Cache invalidations propagate to all regions automatically via Upstash replication. The client gracefully degrades when Redis is unavailable — cache misses return `undefined` and operations no-op instead of throwing.

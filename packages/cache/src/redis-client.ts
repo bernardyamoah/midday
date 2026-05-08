@@ -1,46 +1,52 @@
-import { type RedisClientType, createClient } from "redis";
+import { createLoggerWithContext } from "@midday/logger";
+import { getSharedRedisClient, waitForRedisReady } from "./shared-redis";
+
+const logger = createLoggerWithContext("redis-cache");
+
+const COMMAND_TIMEOUT_MS = 1_500;
+
+const SLOW_COMMAND_MS = 50;
+
+async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(
+      () =>
+        reject(
+          new Error(`Redis ${label} timed out after ${COMMAND_TIMEOUT_MS}ms`),
+        ),
+      COMMAND_TIMEOUT_MS,
+    );
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 export class RedisCache {
-  private redis: RedisClientType | null = null;
   private prefix: string;
   private defaultTTL: number;
+  private inflight = new Map<string, Promise<unknown>>();
 
   constructor(prefix: string, defaultTTL: number = 30 * 60) {
     this.prefix = prefix;
     this.defaultTTL = defaultTTL;
   }
 
-  private async getRedisClient(): Promise<RedisClientType> {
-    if (this.redis?.isOpen) {
-      return this.redis;
+  private get redis() {
+    return getSharedRedisClient();
+  }
+
+  private get isConnected(): boolean {
+    try {
+      return this.redis.connected;
+    } catch {
+      return false;
     }
-
-    // Create new connection with your proven solution
-    const redisUrl = process.env.REDIS_URL;
-
-    if (!redisUrl) {
-      throw new Error("REDIS_URL environment variable is required");
-    }
-
-    const isProduction =
-      process.env.NODE_ENV === "production" || process.env.FLY_APP_NAME;
-
-    this.redis = createClient({
-      url: redisUrl,
-      pingInterval: 4 * 60 * 1000, // Your proven 4-minute ping interval
-      socket: {
-        family: isProduction ? 6 : 4, // IPv6 for Fly.io production, IPv4 for local
-        connectTimeout: isProduction ? 15000 : 5000,
-      },
-    });
-
-    // Event listeners from your proven solution
-    this.redis.on("error", (err) => {
-      console.error(`Redis error for ${this.prefix} cache:`, err);
-    });
-
-    await this.redis.connect();
-    return this.redis;
   }
 
   private parseValue<T>(value: string | null): T | undefined {
@@ -49,16 +55,14 @@ export class RedisCache {
     try {
       return JSON.parse(value) as T;
     } catch {
-      // If parsing fails, return the raw string (for backwards compatibility)
       return value as unknown as T;
     }
   }
 
-  private stringifyValue(value: any): string {
+  private stringifyValue(value: unknown): string {
     if (typeof value === "string") {
       return value;
     }
-
     return JSON.stringify(value);
   }
 
@@ -67,67 +71,142 @@ export class RedisCache {
   }
 
   async get<T>(key: string): Promise<T | undefined> {
+    if (!this.isConnected && !(await waitForRedisReady())) {
+      logger.warn("GET skipped: not connected", { prefix: this.prefix, key });
+      return undefined;
+    }
+
+    const fullKey = this.getKey(key);
+
+    const existing = this.inflight.get(fullKey);
+    if (existing) {
+      return existing as Promise<T | undefined>;
+    }
+
+    const promise = this.executeGet<T>(key, fullKey);
+    this.inflight.set(fullKey, promise);
+
     try {
-      const redis = await this.getRedisClient();
-      const value = await redis.get(this.getKey(key));
+      return await promise;
+    } finally {
+      this.inflight.delete(fullKey);
+    }
+  }
+
+  private async executeGet<T>(
+    key: string,
+    fullKey: string,
+  ): Promise<T | undefined> {
+    const start = performance.now();
+    try {
+      const value = await withTimeout(this.redis.get(fullKey), "GET");
+      const elapsed = performance.now() - start;
+
+      if (elapsed > SLOW_COMMAND_MS) {
+        logger.warn("Slow GET", {
+          prefix: this.prefix,
+          key,
+          latencyMs: Math.round(elapsed),
+          hit: value !== null,
+        });
+      }
+
       return this.parseValue<T>(value);
     } catch (error) {
-      console.error(
-        `Redis get error for ${this.prefix} cache, key "${key}":`,
-        error,
-      );
-      // Reset connection on error to force reconnection next time
-      this.redis = null;
+      const elapsed = performance.now() - start;
+      logger.error("GET failed", {
+        prefix: this.prefix,
+        key,
+        latencyMs: Math.round(elapsed),
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   }
 
-  async set(key: string, value: any, ttlSeconds?: number): Promise<void> {
+  async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
+    if (!this.isConnected && !(await waitForRedisReady())) {
+      logger.warn("SET skipped: not connected", { prefix: this.prefix, key });
+      return;
+    }
+
+    const start = performance.now();
     try {
-      const redis = await this.getRedisClient();
       const serializedValue = this.stringifyValue(value);
       const redisKey = this.getKey(key);
       const ttl = ttlSeconds ?? this.defaultTTL;
 
-      await redis.set(redisKey, serializedValue);
       if (ttl > 0) {
-        await redis.expire(redisKey, ttl);
+        await withTimeout(
+          this.redis.send("SETEX", [redisKey, String(ttl), serializedValue]),
+          "SETEX",
+        );
+      } else {
+        await withTimeout(this.redis.set(redisKey, serializedValue), "SET");
+      }
+
+      const elapsed = performance.now() - start;
+      if (elapsed > SLOW_COMMAND_MS) {
+        logger.warn("Slow SET", {
+          prefix: this.prefix,
+          key,
+          latencyMs: Math.round(elapsed),
+          ttl,
+        });
       }
     } catch (error) {
-      console.error(
-        `Redis set error for ${this.prefix} cache, key "${key}":`,
-        error,
-      );
-      // Reset connection on error
-      this.redis = null;
+      const elapsed = performance.now() - start;
+      logger.error("SET failed", {
+        prefix: this.prefix,
+        key,
+        latencyMs: Math.round(elapsed),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
   async delete(key: string): Promise<void> {
+    if (!this.isConnected && !(await waitForRedisReady())) {
+      logger.warn("DEL skipped: not connected", { prefix: this.prefix, key });
+      return;
+    }
+
+    const start = performance.now();
     try {
-      const redis = await this.getRedisClient();
-      await redis.del(this.getKey(key));
+      await withTimeout(this.redis.del(this.getKey(key)), "DEL");
+
+      const elapsed = performance.now() - start;
+      if (elapsed > SLOW_COMMAND_MS) {
+        logger.warn("Slow DEL", {
+          prefix: this.prefix,
+          key,
+          latencyMs: Math.round(elapsed),
+        });
+      }
     } catch (error) {
-      console.error(
-        `Redis delete error for ${this.prefix} cache, key "${key}":`,
-        error,
-      );
-      // Reset connection on error
-      this.redis = null;
+      const elapsed = performance.now() - start;
+      logger.error("DEL failed", {
+        prefix: this.prefix,
+        key,
+        latencyMs: Math.round(elapsed),
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
   async healthCheck(): Promise<void> {
+    const start = performance.now();
     try {
-      const redis = await this.getRedisClient();
-      await redis.ping();
+      await withTimeout(this.redis.send("PING", []), "PING");
+      const elapsed = performance.now() - start;
+      logger.info("Health check OK", { latencyMs: Math.round(elapsed) });
     } catch (error) {
-      // Reset connection state on health check failure
-      if (this.redis) {
-        await this.redis.quit();
-        this.redis = null;
-      }
-      throw new Error(`Redis health check failed: ${error}`);
+      const elapsed = performance.now() - start;
+      logger.error("Health check failed", {
+        latencyMs: Math.round(elapsed),
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
     }
   }
 }

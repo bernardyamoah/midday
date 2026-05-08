@@ -1,154 +1,223 @@
 "use client";
 
-import { LoadMore } from "@/components/load-more";
-import { useInboxFilterParams } from "@/hooks/use-inbox-filter-params";
-import { useInboxParams } from "@/hooks/use-inbox-params";
-import { useRealtime } from "@/hooks/use-realtime";
-import { useUserQuery } from "@/hooks/use-user";
-import { useTRPC } from "@/trpc/client";
-import { ScrollArea } from "@midday/ui/scroll-area";
 import {
   useQueryClient,
   useSuspenseInfiniteQuery,
 } from "@tanstack/react-query";
-import { AnimatePresence, motion } from "framer-motion";
-import { useEffect, useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { motion } from "framer-motion";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
-import { useInView } from "react-intersection-observer";
-import { useBoolean, useCounter, useDebounceCallback } from "usehooks-ts";
+import { useDebounceCallback } from "usehooks-ts";
+import { useInboxFilterParams } from "@/hooks/use-inbox-filter-params";
+import { useInboxParams } from "@/hooks/use-inbox-params";
+import { useMatchSound } from "@/hooks/use-match-sound";
+import { useRealtime } from "@/hooks/use-realtime";
+import { useUserQuery } from "@/hooks/use-user";
+import { useInboxStore } from "@/store/inbox";
+import { useTRPC } from "@/trpc/client";
+import { InboxBulkActions } from "./inbox-bulk-actions";
 import { InboxDetails } from "./inbox-details";
-import { NoResults } from "./inbox-empty";
+import { InboxConnectedEmpty, InboxOtherEmpty, NoResults } from "./inbox-empty";
 import { InboxItem } from "./inbox-item";
 import { InboxViewSkeleton } from "./inbox-skeleton";
+
+const ITEM_HEIGHT = 90;
+const ITEM_GAP = 16;
 
 export function InboxView() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { ref, inView } = useInView();
   const { data: user } = useUserQuery();
   const { params, setParams } = useInboxParams();
   const { params: filter, hasFilter } = useInboxFilterParams();
+  const {
+    lastClickedIndex,
+    selectRange,
+    setLastClickedIndex,
+    toggleSelection,
+  } = useInboxStore();
+  const { play: playMatchSound } = useMatchSound();
 
-  const allSeenIdsRef = useRef(new Set<string>());
-  const itemRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
-  const scrollAreaViewportRef = useRef<HTMLDivElement | null>(null);
+  const realtimeInsertIdsRef = useRef(new Set<string>());
+  const animatedIdsRef = useRef(new Set<string>());
+  const parentRef = useRef<HTMLDivElement>(null);
+  const shouldScrollRef = useRef(false);
+
+  // State to track if timeout has been reached (for showing empty state)
+  const [hasTimedOut, setHasTimedOut] = useState(false);
+
+  // Capture the "just connected" state locally so it persists even after URL params are cleared
+  // (AppConnectionToast clears params after 100ms, but we need this state for the 60s timeout)
+  const [wasJustConnected, setWasJustConnected] = useState(
+    () => params.connected === true,
+  );
+
+  // Update local state when params.connected becomes truthy
+  useEffect(() => {
+    if (params.connected === true) {
+      setWasJustConnected(true);
+    }
+  }, [params.connected]);
 
   const infiniteQueryOptions = trpc.inbox.get.infiniteQueryOptions(
     {
-      order: params.order,
-      sort: params.sort,
+      order: params.inboxOrder,
+      sort: params.inboxSort,
       ...filter,
+      tab: filter.tab ?? "all", // Default to "all" tab
     },
     {
       getNextPageParam: ({ meta }) => meta?.cursor,
     },
   );
 
-  const { data, fetchNextPage, hasNextPage, refetch } =
+  const { data, fetchNextPage, hasNextPage, isFetchingNextPage, refetch } =
     useSuspenseInfiniteQuery(infiniteQueryOptions);
 
   const tableData = useMemo(() => {
     return data?.pages.flatMap((page) => page.data) ?? [];
   }, [data]);
 
-  // Enhanced batching mechanism using usehooks-ts
-  const {
-    count: updateCount,
-    increment: incrementUpdates,
-    reset: resetUpdates,
-  } = useCounter(0);
-  const {
-    value: hasMatchingChanges,
-    setTrue: setHasMatchingChanges,
-    setFalse: resetMatchingChanges,
-  } = useBoolean(false);
-
-  const MAX_BATCH_SIZE = 10;
-
-  // Helper to check if update affects transaction matching
-  const checkMatchingChanges = (payload: any) => {
-    if (payload?.new) {
-      const newRecord = payload.new;
-      const oldRecord = payload.old;
-
-      return (
-        newRecord.status !== oldRecord?.status &&
-        (newRecord.status === "done" ||
-          newRecord.status === "suggested_match" ||
-          oldRecord?.status === "done" ||
-          oldRecord?.status === "suggested_match")
-      );
+  // Clear the "just connected" state once we have data or timeout fires
+  useEffect(() => {
+    if (wasJustConnected && (tableData.length > 0 || hasTimedOut)) {
+      setWasJustConnected(false);
     }
-    return false;
-  };
-
-  // Refresh function that handles invalidations
-  const performRefresh = (shouldInvalidateTransactions: boolean) => {
-    refetch();
-
-    queryClient.invalidateQueries({
-      queryKey: trpc.inbox.getById.queryKey(),
-    });
-
-    if (shouldInvalidateTransactions) {
-      queryClient.invalidateQueries({
-        queryKey: trpc.transactions.get.infiniteQueryKey(),
-      });
+    // Reset hasTimedOut when data arrives after timeout - prevents showing
+    // InboxConnectedEmpty if user later deletes all items
+    if (hasTimedOut && tableData.length > 0) {
+      setHasTimedOut(false);
     }
-  };
+  }, [wasJustConnected, tableData.length, hasTimedOut]);
 
-  // Debounced handler for regular updates
-  const debouncedRefresh = useDebounceCallback(() => {
-    performRefresh(hasMatchingChanges);
-    resetUpdates();
-    resetMatchingChanges();
-  }, 200);
+  // Timeout configuration - wait 1 minute for sync to complete
+  const SYNC_TIMEOUT = 60 * 1000; // 1 minute
 
-  // Main batch handler
-  const batchedUpdateHandler = (payload: any) => {
-    incrementUpdates();
-
-    // Check if this update affects transaction matching
-    if (checkMatchingChanges(payload)) {
-      setHasMatchingChanges();
-    }
-
-    // Force immediate update for bulk operations
-    if (updateCount >= MAX_BATCH_SIZE) {
-      performRefresh(hasMatchingChanges);
-      resetUpdates();
-      resetMatchingChanges();
+  // Set up timeout to show empty state if no items appear
+  useEffect(() => {
+    // Only set timeout if user just connected and no items yet
+    if (!wasJustConnected || tableData.length > 0 || hasTimedOut) {
       return;
     }
 
-    // Use debounced update for smaller batches
-    debouncedRefresh();
-  };
+    const timeout = setTimeout(() => {
+      setHasTimedOut(true);
+    }, SYNC_TIMEOUT);
+
+    return () => clearTimeout(timeout);
+  }, [wasJustConnected, tableData.length, hasTimedOut]);
+
+  const debouncedRefetch = useDebounceCallback(() => {
+    refetch();
+  }, 200);
 
   useRealtime({
     channelName: "realtime_inbox",
     table: "inbox",
     filter: `team_id=eq.${user?.teamId}`,
     onEvent: (payload) => {
-      if (payload.eventType === "INSERT" || payload.eventType === "UPDATE") {
-        batchedUpdateHandler(payload);
+      if (payload.eventType === "INSERT") {
+        const id = payload.new?.id;
+        if (id) realtimeInsertIdsRef.current.add(id);
+        debouncedRefetch();
+      }
+
+      if (payload.eventType === "UPDATE") {
+        const record = payload.new;
+        if (!record?.id) return;
+
+        const prevStatus =
+          tableData.find((item) => item.id === record.id)?.status ?? null;
+
+        const wasProcessing =
+          prevStatus === "new" || prevStatus === "processing";
+        const doneProcessing =
+          record.status !== "new" && record.status !== "processing";
+
+        if (wasProcessing && doneProcessing) {
+          debouncedRefetch();
+        } else if (record.status && record.status !== prevStatus) {
+          queryClient.setQueriesData(
+            { queryKey: trpc.inbox.get.infiniteQueryKey() },
+            (old: any) => {
+              if (!old?.pages) return old;
+              return {
+                ...old,
+                pages: old.pages.map((page: any) => ({
+                  ...page,
+                  data: page.data.map((item: any) =>
+                    item.id === record.id
+                      ? { ...item, status: record.status }
+                      : item,
+                  ),
+                })),
+              };
+            },
+          );
+        }
+
+        if (record.id === params.inboxId) {
+          queryClient.invalidateQueries({
+            queryKey: trpc.inbox.getById.queryKey({ id: params.inboxId }),
+          });
+        }
+
+        if (
+          record.status === "suggested_match" &&
+          prevStatus !== "suggested_match"
+        ) {
+          playMatchSound();
+        }
+
+        if (
+          record.status !== prevStatus &&
+          (record.status === "done" ||
+            record.status === "suggested_match" ||
+            prevStatus === "done" ||
+            prevStatus === "suggested_match")
+        ) {
+          queryClient.invalidateQueries({
+            queryKey: trpc.transactions.get.infiniteQueryKey(),
+          });
+        }
       }
     },
   });
 
+  const rowVirtualizer = useVirtualizer({
+    count: tableData.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => ITEM_HEIGHT + ITEM_GAP,
+    overscan: 10,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
   useEffect(() => {
-    if (inView) {
+    const lastItem = virtualItems[virtualItems.length - 1];
+    if (
+      lastItem &&
+      lastItem.index >= tableData.length - 5 &&
+      hasNextPage &&
+      !isFetchingNextPage
+    ) {
       fetchNextPage();
     }
-  }, [inView]);
+  }, [
+    virtualItems,
+    tableData.length,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  ]);
 
   const newItemIds = useMemo(() => {
     const newIds = new Set<string>();
 
     for (const item of tableData) {
-      if (!allSeenIdsRef.current.has(item.id)) {
+      if (realtimeInsertIdsRef.current.has(item.id)) {
         newIds.add(item.id);
-        allSeenIdsRef.current.add(item.id);
       }
     }
 
@@ -156,13 +225,44 @@ export function InboxView() {
   }, [tableData]);
 
   useEffect(() => {
-    if (!params.inboxId && tableData.length > 0) {
+    for (const id of newItemIds) {
+      realtimeInsertIdsRef.current.delete(id);
+    }
+  }, [newItemIds]);
+
+  useEffect(() => {
+    if (tableData.length > 0) {
+      const currentInList = tableData.some(
+        (item) => item.id === params.inboxId,
+      );
+
+      // Auto-select first item if nothing selected or current selection isn't in the list
+      if (!params.inboxId || !currentInList) {
+        setParams({
+          ...params,
+          inboxId: tableData.at(0)?.id,
+        });
+      }
+    } else if (params.inboxId) {
+      // Clear selection when list is empty
       setParams({
         ...params,
-        inboxId: tableData.at(0)?.id,
+        inboxId: null,
       });
     }
   }, [tableData, params.inboxId, setParams]);
+
+  // Clear lastClickedIndex when sort/filter/tab params change
+  // since item positions in tableData will change
+  useEffect(() => {
+    setLastClickedIndex(null);
+  }, [
+    params.inboxSort,
+    params.inboxOrder,
+    filter.q,
+    filter.status,
+    filter.tab,
+  ]);
 
   // Arrow key navigation
   useHotkeys(
@@ -175,6 +275,7 @@ export function InboxView() {
 
       if (currentIndex > 0) {
         const prevItem = tableData[currentIndex - 1];
+        shouldScrollRef.current = true;
         setParams({
           ...params,
           inboxId: prevItem?.id,
@@ -194,6 +295,7 @@ export function InboxView() {
 
       if (currentIndex < tableData.length - 1) {
         const nextItem = tableData[currentIndex + 1];
+        shouldScrollRef.current = true;
         setParams({
           ...params,
           inboxId: nextItem?.id,
@@ -203,40 +305,53 @@ export function InboxView() {
     [tableData, params, setParams],
   );
 
-  // Scroll selected inbox item to center of viewport
+  // Handle item click for selection
+  const handleItemClick = (e: React.MouseEvent, index: number) => {
+    if (e.shiftKey && lastClickedIndex !== null) {
+      // Shift-click: select range
+      selectRange(lastClickedIndex, index, tableData);
+      setLastClickedIndex(index);
+    } else {
+      // Regular click: toggle selection
+      const item = tableData[index];
+      if (item) {
+        toggleSelection(item.id);
+        setLastClickedIndex(index);
+      }
+    }
+  };
+
   useEffect(() => {
     const inboxId = params.inboxId;
-    if (!inboxId) return;
+    if (!inboxId || !shouldScrollRef.current) return;
 
-    // Use requestAnimationFrame to ensure DOM is ready
-    requestAnimationFrame(() => {
-      const itemElement = itemRefs.current.get(inboxId);
-      const viewport = scrollAreaViewportRef.current;
-      if (!itemElement || !viewport) return;
-
-      // Calculate position relative to viewport
-      const viewportRect = viewport.getBoundingClientRect();
-      const itemRect = itemElement.getBoundingClientRect();
-
-      // Calculate current scroll position
-      const itemTop = itemRect.top - viewportRect.top + viewport.scrollTop;
-      const itemHeight = itemRect.height;
-      const viewportHeight = viewport.clientHeight;
-
-      // Center the item in the viewport
-      const scrollPosition = itemTop - viewportHeight / 2 + itemHeight / 2;
-
-      // Scroll the viewport directly (not the window)
-      viewport.scrollTo({
-        top: Math.max(0, scrollPosition),
+    const index = tableData.findIndex((item) => item.id === inboxId);
+    if (index >= 0) {
+      rowVirtualizer.scrollToIndex(index, {
+        align: "center",
         behavior: "smooth",
       });
-    });
-  }, [params.inboxId, tableData]);
+    }
 
-  // If user is connected, and we don't have any data, we need to show a skeleton
-  if (params.connected && !tableData?.length) {
+    shouldScrollRef.current = false;
+  }, [params.inboxId, tableData, rowVirtualizer]);
+
+  // If user just connected and no items yet, show skeleton while waiting for sync
+  // (realtime will push items if found, timeout will trigger empty state if not)
+  if (wasJustConnected && !tableData?.length && !hasTimedOut) {
     return <InboxViewSkeleton />;
+  }
+
+  // If timeout reached with no items, show connected empty state (only on "all" tab)
+  const isAllTab = !filter.tab || filter.tab === "all";
+
+  if (isAllTab && hasTimedOut && !tableData?.length && !hasFilter) {
+    return <InboxConnectedEmpty />;
+  }
+
+  // Show empty state for "other" tab when no items
+  if (!isAllTab && !tableData?.length && !hasFilter) {
+    return <InboxOtherEmpty />;
   }
 
   if (hasFilter && !tableData?.length) {
@@ -246,60 +361,76 @@ export function InboxView() {
   return (
     <div className="flex flex-row space-x-8 mt-4">
       <div className="w-full h-full">
-        <ScrollArea
-          ref={(node) => {
-            scrollAreaViewportRef.current = node as HTMLDivElement | null;
-          }}
-          className="relative w-full h-[calc(100vh-180px)] overflow-hidden"
-          hideScrollbar
+        <div
+          ref={parentRef}
+          className="relative w-full overflow-auto scrollbar-hide"
+          style={{ height: "calc(100vh - 180px)" }}
         >
-          <AnimatePresence initial={false}>
-            <div className="m-0 h-full space-y-4">
-              {tableData.map((item, index) => {
-                const isNewItem = newItemIds.has(item.id);
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              position: "relative",
+              width: "100%",
+            }}
+          >
+            {virtualItems.map((virtualRow) => {
+              const item = tableData[virtualRow.index];
+              if (!item) return null;
+              const shouldAnimate =
+                newItemIds.has(item.id) && !animatedIdsRef.current.has(item.id);
 
-                return (
+              if (shouldAnimate) {
+                animatedIdsRef.current.add(item.id);
+              }
+
+              return (
+                <div
+                  key={virtualRow.key}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    height: `${ITEM_HEIGHT}px`,
+                    transform: `translateY(${virtualRow.start}px)`,
+                    contain: "layout style paint",
+                  }}
+                >
                   <motion.div
-                    key={item.id}
                     initial={
-                      isNewItem ? { opacity: 0, y: -30, scale: 0.95 } : false
+                      shouldAnimate
+                        ? { opacity: 0, y: -30, scale: 0.95 }
+                        : false
                     }
-                    animate={
-                      isNewItem ? { opacity: 1, y: 0, scale: 1 } : "visible"
-                    }
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
                     transition={
-                      isNewItem
+                      shouldAnimate
                         ? {
                             duration: 0.4,
                             ease: [0.23, 1, 0.32, 1],
-                            delay: index < 5 ? index * 0.05 : 0,
+                            delay:
+                              virtualRow.index < 5
+                                ? virtualRow.index * 0.05
+                                : 0,
                           }
-                        : undefined
+                        : { duration: 0 }
                     }
-                    exit="exit"
                   >
                     <InboxItem
-                      ref={(el) => {
-                        if (el) {
-                          itemRefs.current.set(item.id, el);
-                        } else {
-                          itemRefs.current.delete(item.id);
-                        }
-                      }}
                       item={item}
-                      index={index}
+                      index={virtualRow.index}
+                      onItemClick={handleItemClick}
                     />
                   </motion.div>
-                );
-              })}
-            </div>
-          </AnimatePresence>
-
-          <LoadMore ref={ref} hasNextPage={hasNextPage} />
-        </ScrollArea>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       <InboxDetails />
+      <InboxBulkActions />
     </div>
   );
 }

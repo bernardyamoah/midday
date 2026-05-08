@@ -1,11 +1,5 @@
 "use client";
 
-import { generateTransactionsFilters } from "@/actions/ai/filters/generate-transactions-filters";
-import { useTransactionFilterParams } from "@/hooks/use-transaction-filter-params";
-import { useTransactionFilterParamsWithPersistence } from "@/hooks/use-transaction-filter-params-with-persistence";
-import { useTRPC } from "@/trpc/client";
-import { formatAccountName } from "@/utils/format";
-import { Calendar } from "@midday/ui/calendar";
 import { cn } from "@midday/ui/cn";
 import {
   DropdownMenu,
@@ -21,15 +15,26 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { Input } from "@midday/ui/input";
 import { useQuery } from "@tanstack/react-query";
-import { readStreamableValue } from "ai/rsc";
-import { formatISO } from "date-fns";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { useTransactionFilterParams } from "@/hooks/use-transaction-filter-params";
+import { useTransactionFilterParamsWithPersistence } from "@/hooks/use-transaction-filter-params-with-persistence";
+import { useTransactionTab } from "@/hooks/use-transaction-tab";
+import { useTRPC } from "@/trpc/client";
+import { formatAccountName } from "@/utils/format";
 import { AmountRange } from "./amount-range";
+import { DateRangeFilter } from "./date-range-filter";
 import { FilterList } from "./filter-list";
 import { SelectCategory } from "./select-category";
 
-type StatusFilter = "completed" | "uncompleted" | "archived" | "excluded";
+type StatusFilter =
+  | "blank"
+  | "receipt_match"
+  | "in_review"
+  | "export_error"
+  | "archived"
+  | "excluded"
+  | "exported";
 type AttachmentFilter = "include" | "exclude";
 type RecurringFilter = "all" | "weekly" | "monthly" | "annually";
 type ManualFilter = "include" | "exclude";
@@ -70,22 +75,17 @@ const defaultSearch = {
   tags: null,
   amount_range: null,
   manual: null,
+  type: null,
 };
 
-const PLACEHOLDERS = [
-  "Software and taxes last month",
-  "Income last year",
-  "Software last Q4",
-  "From Google without receipt",
-  "Search or filter",
-  "Without receipts this month",
-];
-
 const statusFilters: FilterItem<StatusFilter>[] = [
-  { id: "completed", name: "Completed" },
-  { id: "uncompleted", name: "Uncompleted" },
-  { id: "archived", name: "Archived" },
+  { id: "blank", name: "No receipt" },
+  { id: "receipt_match", name: "Receipt found" },
+  { id: "in_review", name: "Ready to export" },
+  { id: "export_error", name: "Export failed" },
+  { id: "exported", name: "Exported" },
   { id: "excluded", name: "Excluded" },
+  { id: "archived", name: "Archived" },
 ];
 
 const attachmentsFilters: FilterItem<AttachmentFilter>[] = [
@@ -140,6 +140,7 @@ function FilterCheckboxItem({
       key={id}
       checked={checked}
       onCheckedChange={onCheckedChange}
+      onSelect={(e) => e.preventDefault()}
       className={className}
     >
       {name}
@@ -213,34 +214,25 @@ function updateArrayFilter(
 }
 
 export function TransactionsSearchFilter() {
-  const [placeholder, setPlaceholder] = useState("");
+  const { tab } = useTransactionTab();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [streaming, setStreaming] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const { filter = defaultSearch, setFilter } =
     useTransactionFilterParamsWithPersistence();
   const { tags, accounts, categories } = useFilterData(isOpen, isFocused);
-  const [prompt, setPrompt] = useState(filter.q ?? "");
-
-  useEffect(() => {
-    const randomPlaceholder =
-      PLACEHOLDERS[Math.floor(Math.random() * PLACEHOLDERS.length)] ??
-      "Search or filter";
-
-    setPlaceholder(randomPlaceholder);
-  }, []);
+  const [input, setInput] = useState(filter.q ?? "");
 
   useHotkeys(
     "esc",
     () => {
-      setPrompt("");
+      setInput("");
       setFilter(defaultSearch);
       setIsOpen(false);
     },
     {
       enableOnFormTags: true,
-      enabled: Boolean(prompt) && isFocused,
+      enabled: Boolean(input) && isFocused,
     },
   );
 
@@ -249,60 +241,23 @@ export function TransactionsSearchFilter() {
     inputRef.current?.focus();
   });
 
+  if (tab === "review") {
+    return <h2 className="text-lg font-serif tracking-tight">Export</h2>;
+  }
+
   const handleSearch = (evt: React.ChangeEvent<HTMLInputElement>) => {
     const value = evt.target.value;
     if (value) {
-      setPrompt(value);
+      setInput(value);
     } else {
       setFilter({ q: null });
-      setPrompt("");
+      setInput("");
     }
   };
 
-  const handleSubmit = async () => {
-    if (prompt.split(" ").length > 1) {
-      setStreaming(true);
-
-      const { object } = await generateTransactionsFilters(
-        prompt,
-        `
-          Categories: ${categories?.map((category) => category.name).join(", ")}
-          Tags: ${tags?.map((tag) => tag.name).join(", ")}
-        `,
-      );
-
-      let finalObject = {};
-
-      for await (const partialObject of readStreamableValue(object)) {
-        if (partialObject) {
-          finalObject = {
-            ...finalObject,
-            ...partialObject,
-            categories:
-              partialObject?.categories?.map(
-                (name: string) =>
-                  categories?.find((category) => category.name === name)?.slug,
-              ) ?? null,
-            tags:
-              partialObject?.tags?.map(
-                (name: string) => tags?.find((tag) => tag.name === name)?.id,
-              ) ?? null,
-            recurring: partialObject?.recurring ?? null,
-            q: partialObject?.name ?? null,
-            amount_range: partialObject?.amount_range ?? null,
-          };
-        }
-      }
-
-      setFilter({
-        q: null,
-        ...finalObject,
-      });
-
-      setStreaming(false);
-    } else {
-      setFilter({ q: prompt.length > 0 ? prompt : null });
-    }
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setFilter({ q: input.length > 0 ? input : null });
   };
 
   const validFilters = Object.fromEntries(
@@ -314,23 +269,28 @@ export function TransactionsSearchFilter() {
   );
 
   const processFiltersForList = () => {
+    const processed = {
+      start: filter.start ?? undefined,
+      end: filter.end ?? undefined,
+      amount_range: filter.amount_range
+        ? `${filter.amount_range[0]}-${filter.amount_range[1]}`
+        : undefined,
+      attachments: filter.attachments ?? undefined,
+      categories: filter.categories ?? undefined,
+      tags: filter.tags ?? undefined,
+      accounts: filter.accounts ?? undefined,
+      assignees: filter.assignees ?? undefined,
+      statuses: filter.statuses ?? undefined,
+      recurring: filter.recurring ?? undefined,
+      manual: filter.manual ?? undefined,
+      type: filter.type ?? undefined,
+    };
+
+    // Filter out undefined and null values
     return Object.fromEntries(
-      Object.entries({
-        ...validFilters,
-        start: filter.start ?? undefined,
-        end: filter.end ?? undefined,
-        amount_range: filter.amount_range
-          ? `${filter.amount_range[0]}-${filter.amount_range[1]}`
-          : undefined,
-        attachments: filter.attachments ?? undefined,
-        categories: filter.categories ?? undefined,
-        tags: filter.tags ?? undefined,
-        accounts: filter.accounts ?? undefined,
-        assignees: filter.assignees ?? undefined,
-        statuses: filter.statuses ?? undefined,
-        recurring: filter.recurring ?? undefined,
-        manual: filter.manual ?? undefined,
-      }).filter(([_, value]) => value !== undefined && value !== null),
+      Object.entries(processed).filter(
+        ([_, value]) => value !== undefined && value !== null,
+      ),
     );
   };
 
@@ -358,9 +318,9 @@ export function TransactionsSearchFilter() {
           <Icons.Search className="absolute pointer-events-none left-3 top-[11px]" />
           <Input
             ref={inputRef}
-            placeholder={placeholder}
+            placeholder="Search transactions..."
             className="pl-9 w-full sm:w-[350px] pr-8"
-            value={prompt}
+            value={input}
             onChange={handleSearch}
             onFocus={() => setIsFocused(true)}
             onBlur={() => setIsFocused(false)}
@@ -387,7 +347,6 @@ export function TransactionsSearchFilter() {
 
         <FilterList
           filters={processFiltersForList()}
-          loading={streaming}
           onRemove={setFilter}
           categories={categories}
           accounts={accounts}
@@ -408,28 +367,10 @@ export function TransactionsSearchFilter() {
         side="top"
       >
         <FilterMenuItem icon={Icons.CalendarMonth} label="Date">
-          <Calendar
-            mode="range"
-            initialFocus
-            toDate={new Date()}
-            selected={{
-              from: filter.start ? new Date(filter.start) : undefined,
-              to: filter.end ? new Date(filter.end) : undefined,
-            }}
-            onSelect={(range) => {
-              if (!range) return;
-
-              const newRange = {
-                start: range.from
-                  ? formatISO(range.from, { representation: "date" })
-                  : null,
-                end: range.to
-                  ? formatISO(range.to, { representation: "date" })
-                  : null,
-              };
-
-              setFilter(newRange);
-            }}
+          <DateRangeFilter
+            start={filter.start}
+            end={filter.end}
+            onSelect={setFilter}
           />
         </FilterMenuItem>
 

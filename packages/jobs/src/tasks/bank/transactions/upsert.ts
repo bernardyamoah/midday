@@ -2,7 +2,7 @@ import { transformTransaction } from "@jobs/utils/transform";
 import { createClient } from "@midday/supabase/job";
 import { logger, schemaTask, tasks } from "@trigger.dev/sdk";
 import { z } from "zod";
-import { embedTransaction } from "../../transactions/embed-transaction";
+import { enrichTransactions } from "../../transactions/enrich-transaction";
 
 const transactionSchema = z.object({
   id: z.string(),
@@ -57,29 +57,20 @@ export const upsertTransactions = schemaTask({
         .select("id")
         .throwOnError();
 
-      // Extract transaction IDs for embedding
       const transactionIds = upsertedTransactions?.map((tx) => tx.id) || [];
 
-      // Process new transactions: embedding
       if (transactionIds.length > 0) {
-        // Step 1: Create embeddings and wait for completion
-        await embedTransaction.triggerAndWait({
+        await enrichTransactions.trigger({
           transactionIds,
           teamId,
         });
 
-        logger.info("Transaction embedding completed", {
-          transactionCount: transactionIds.length,
-          teamId,
-        });
-
-        // Step 2: Bidirectional matching
         await tasks.trigger("match-transactions-bidirectional", {
           teamId,
           newTransactionIds: transactionIds,
         });
 
-        logger.info("Triggered bidirectional transaction matching", {
+        logger.info("Triggered enrichment and matching", {
           transactionCount: transactionIds.length,
           teamId,
         });

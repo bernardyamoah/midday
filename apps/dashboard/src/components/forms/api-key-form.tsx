@@ -1,9 +1,5 @@
 "use client";
 
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useTokenModalStore } from "@/store/token-modal";
-import { useTRPC } from "@/trpc/client";
-import { RESOURCES } from "@/utils/scopes";
 import {
   SCOPES,
   type Scope,
@@ -11,6 +7,7 @@ import {
   scopePresets,
   scopesToName,
 } from "@api/utils/scopes";
+import { LogEvents } from "@midday/events/events";
 import { AnimatedSizeContainer } from "@midday/ui/animated-size-container";
 import {
   Form,
@@ -23,9 +20,14 @@ import {
 import { Input } from "@midday/ui/input";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { Tabs, TabsList, TabsTrigger } from "@midday/ui/tabs";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useTokenModalStore } from "@/store/token-modal";
+import { useTRPC } from "@/trpc/client";
+import { RESOURCES } from "@/utils/scopes";
 import { ScopeSelector } from "../scope-selector";
 
 const formSchema = z.object({
@@ -50,15 +52,18 @@ export function ApiKeyForm({ onSuccess }: Props) {
 
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const { track } = useOpenPanel();
 
   const upsertApiKeyMutation = useMutation(
     trpc.apiKeys.upsert.mutationOptions({
-      onSuccess: (data) => {
+      onSuccess: (result) => {
+        track(LogEvents.ApiKeyCreated.name);
+
         queryClient.invalidateQueries({
           queryKey: trpc.apiKeys.get.queryKey(),
         });
 
-        onSuccess(data.key);
+        onSuccess(result.key);
       },
     }),
   );

@@ -1,8 +1,5 @@
 "use client";
 
-import { useCustomerParams } from "@/hooks/use-customer-params";
-import { useInvoiceParams } from "@/hooks/use-invoice-params";
-import { useTRPC } from "@/trpc/client";
 import { Button } from "@midday/ui/button";
 import {
   Command,
@@ -15,6 +12,9 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@midday/ui/popover";
 import { useQuery } from "@tanstack/react-query";
 import React from "react";
+import { useCustomerParams } from "@/hooks/use-customer-params";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { useTRPC } from "@/trpc/client";
 
 export function SelectCustomer() {
   const trpc = useTRPC();
@@ -51,7 +51,7 @@ export function SelectCustomer() {
         type="button"
         variant="ghost"
         onClick={() => setCustomerParams({ createCustomer: true })}
-        className="font-mono text-[#434343] p-0 text-[11px] h-auto hover:bg-transparent"
+        className="text-[#434343] p-0 text-[11px] h-auto hover:bg-transparent"
       >
         Select customer
       </Button>
@@ -65,7 +65,7 @@ export function SelectCustomer() {
           type="button"
           variant="ghost"
           aria-expanded={open}
-          className="font-mono text-[#434343] p-0 text-[11px] h-auto hover:bg-transparent"
+          className="text-[#434343] p-0 text-[11px] h-auto hover:bg-transparent"
         >
           Select customer
         </Button>
@@ -98,7 +98,7 @@ export function SelectCustomer() {
             <CommandGroup>
               {formatData?.map((item) => (
                 <CommandItem
-                  key={item.value}
+                  key={item.id}
                   value={item.value}
                   onSelect={() => handleSelect(item.id)}
                   className="group text-xs"

@@ -1,11 +1,13 @@
 import type { Database } from "@midday/db/client";
 import { shouldSendNotification } from "@midday/db/queries";
+import InsightsWeeklyEmail from "@midday/email/emails/insights-weekly";
 import InvoiceEmail from "@midday/email/emails/invoice";
 import InvoiceOverdueEmail from "@midday/email/emails/invoice-overdue";
 import InvoicePaidEmail from "@midday/email/emails/invoice-paid";
 import InvoiceReminderEmail from "@midday/email/emails/invoice-reminder";
 import TransactionsEmail from "@midday/email/emails/transactions";
 import TransactionsExportedEmail from "@midday/email/emails/transactions-exported";
+import UpcomingInvoicesEmail from "@midday/email/emails/upcoming-invoices";
 import { render } from "@midday/email/render";
 import { nanoid } from "nanoid";
 import { type CreateEmailOptions, Resend } from "resend";
@@ -40,16 +42,15 @@ export class EmailService {
       };
     }
 
-    const emailPayloads = eligibleEmails.map((email) =>
-      this.#buildEmailPayload(email),
-    );
-
-    // Check if any emails have attachments - batch send doesn't support attachments
-    const hasAttachments = emailPayloads.some(
-      (payload) => payload.attachments && payload.attachments.length > 0,
-    );
-
     try {
+      const emailPayloads = await Promise.all(
+        eligibleEmails.map((email) => this.#buildEmailPayload(email)),
+      );
+
+      // Check if any emails have attachments - batch send doesn't support attachments
+      const hasAttachments = emailPayloads.some(
+        (payload) => payload.attachments && payload.attachments.length > 0,
+      );
       let sent = 0;
       let failed = 0;
 
@@ -120,11 +121,11 @@ export class EmailService {
     return eligibleEmails.filter(Boolean) as EmailInput[];
   }
 
-  #buildEmailPayload(email: EmailInput): CreateEmailOptions {
+  async #buildEmailPayload(email: EmailInput): Promise<CreateEmailOptions> {
     let html: string;
     if (email.template) {
       const template = this.#getTemplate(email.template as string);
-      html = render(template(email.data as any));
+      html = await render(template(email.data as any));
     } else {
       throw new Error(`No template found for email: ${email.template}`);
     }
@@ -166,6 +167,8 @@ export class EmailService {
       "invoice-reminder": InvoiceReminderEmail,
       transactions: TransactionsEmail,
       "transactions-exported": TransactionsExportedEmail,
+      "upcoming-invoices": UpcomingInvoicesEmail,
+      "insights-weekly": InsightsWeeklyEmail,
     };
 
     const template = templates[templateName as keyof typeof templates];

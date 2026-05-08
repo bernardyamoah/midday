@@ -8,7 +8,7 @@ import {
   updateAllNotificationsStatusSchema,
 } from "@api/schemas/notifications";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   getActivities,
   updateActivityStatus,
@@ -79,6 +79,7 @@ app.openapi(
           }),
       }),
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: z.object({
@@ -134,6 +135,7 @@ app.openapi(
     tags: ["Notifications"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateAllNotificationsStatusSchema,

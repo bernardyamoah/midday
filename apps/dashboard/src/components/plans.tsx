@@ -1,232 +1,176 @@
 "use client";
 
-import { useUserQuery } from "@/hooks/use-user";
-import { useTRPC } from "@/trpc/client";
-import { isDesktopApp } from "@midday/desktop-client/platform";
-import { cn } from "@midday/ui/cn";
+import { track } from "@midday/events/client";
+import { LogEvents } from "@midday/events/events";
+import { PlanCards } from "@midday/ui/plan-cards";
 import { SubmitButton } from "@midday/ui/submit-button";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@midday/ui/tooltip";
-import { useQuery } from "@tanstack/react-query";
-import { Check } from "lucide-react";
-import Link from "next/link";
-import { useState } from "react";
+import { PolarEmbedCheckout } from "@polar-sh/checkout/embed";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { useTheme } from "next-themes";
+import { useEffect, useRef, useState } from "react";
+import { revalidateAfterCheckout } from "@/actions/revalidate-action";
+import { useTRPC } from "@/trpc/client";
+
+const POLLING_TIMEOUT_MS = 30_000;
 
 export function Plans() {
-  const isDesktop = isDesktopApp();
-  const [isSubmitting, setIsSubmitting] = useState(0);
+  const [checkoutCurrency, setCheckoutCurrency] = useState<"USD" | "EUR">(
+    "USD",
+  );
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isPollingForPlan, setIsPollingForPlan] = useState(false);
+  const isPollingRef = useRef(false);
+  const pollingStartedAtRef = useRef<number | null>(null);
   const trpc = useTRPC();
+  const checkoutInstanceRef = useRef<Awaited<
+    ReturnType<typeof PolarEmbedCheckout.create>
+  > | null>(null);
 
-  const { data: user } = useUserQuery();
-  const { data, isLoading } = useQuery(trpc.team.availablePlans.queryOptions());
+  const { data: user } = useQuery({
+    ...trpc.user.me.queryOptions(),
+    refetchInterval: (query) => {
+      if (!isPollingForPlan) return false;
+
+      const plan = query.state.data?.team?.plan;
+      if (plan && plan !== "trial") {
+        return false;
+      }
+
+      if (
+        pollingStartedAtRef.current &&
+        Date.now() - pollingStartedAtRef.current > POLLING_TIMEOUT_MS
+      ) {
+        return false;
+      }
+
+      return 1500;
+    },
+  });
+  const theme = useTheme().resolvedTheme === "dark" ? "dark" : "light";
+
+  useEffect(() => {
+    PolarEmbedCheckout.init();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (checkoutInstanceRef.current) {
+        checkoutInstanceRef.current.close();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isPollingForPlan) return;
+
+    const isTimedOut =
+      pollingStartedAtRef.current &&
+      Date.now() - pollingStartedAtRef.current > POLLING_TIMEOUT_MS;
+    const plan = user?.team?.plan;
+    const planUpdated = plan != null && plan !== "trial";
+
+    if (planUpdated || isTimedOut) {
+      pollingStartedAtRef.current = null;
+      setIsPollingForPlan(false);
+      isPollingRef.current = false;
+
+      if (isTimedOut && !planUpdated) {
+        setIsSubmitting(false);
+      }
+
+      revalidateAfterCheckout();
+    }
+  }, [isPollingForPlan, user?.team?.plan]);
+
+  const createCheckoutMutation = useMutation(
+    trpc.billing.createCheckout.mutationOptions(),
+  );
+
+  const handleCheckout = async (plan: "starter" | "pro", planType: string) => {
+    try {
+      setIsSubmitting(true);
+
+      track({
+        event: LogEvents.CheckoutStarted.name,
+        channel: LogEvents.CheckoutStarted.channel,
+        plan,
+        planType,
+        currency: checkoutCurrency,
+      });
+
+      const { url } = await createCheckoutMutation.mutateAsync({
+        plan,
+        planType,
+        embedOrigin: window.location.origin,
+        currency: checkoutCurrency,
+      });
+
+      const checkout = await PolarEmbedCheckout.create(url, {
+        theme,
+      });
+      checkoutInstanceRef.current = checkout;
+
+      checkout.addEventListener("success", (event: any) => {
+        event.preventDefault();
+
+        track({
+          event: LogEvents.CheckoutCompleted.name,
+          channel: LogEvents.CheckoutCompleted.channel,
+          plan,
+          planType,
+          currency: checkoutCurrency,
+        });
+
+        pollingStartedAtRef.current = Date.now();
+        isPollingRef.current = true;
+        setIsPollingForPlan(true);
+      });
+
+      checkout.addEventListener("close", () => {
+        checkoutInstanceRef.current = null;
+        if (!isPollingRef.current) {
+          setIsSubmitting(false);
+        }
+      });
+
+      checkout.addEventListener("confirmed", () => {});
+    } catch (error) {
+      console.error("Failed to open checkout", error);
+      setIsSubmitting(false);
+    }
+  };
 
   return (
-    <TooltipProvider delayDuration={0}>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-7 w-full">
-        {/* Starter Plan */}
-        <div className="flex flex-col p-6 border bg-background">
-          <h2 className="text-xl mb-2 text-left">Starter</h2>
-          <div className="mt-1 flex items-baseline">
-            <span className="text-2xl font-medium tracking-tight">$29</span>
-            <span className="ml-1 text-xl font-medium">/mo</span>
-            <span className="ml-2 text-xs text-muted-foreground">
-              Excl. VAT
-            </span>
-          </div>
-
-          <div className="mt-4">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-left text-[#878787] font-mono">
-              INCLUDING
-            </h3>
-            <ul className="mt-4 space-y-2">
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">
-                  Send up to 10 invoices per month
-                </span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">2 connected banks</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Unlimited bank accounts</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Financial overview</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Time Tracker</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">50 inbox items per month</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Customer management</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Export CSV & reports</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Assistant</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">10GB Vault Storage</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">2 users</span>
-              </li>
-            </ul>
-          </div>
-
-          <div className="mt-8 border-t-[1px] border-border pt-4">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Link
-                  prefetch={false}
-                  href={`/api/checkout?plan=starter&teamId=${user?.team?.id}&isDesktop=${isDesktop}&planType=starter`}
-                  className={cn(!data?.starter && "opacity-50 cursor-default")}
-                  onClick={(evt) => {
-                    if (!data?.starter) {
-                      evt.preventDefault();
-                      return;
-                    }
-
-                    setIsSubmitting(1);
-                  }}
-                >
-                  <SubmitButton
-                    variant="secondary"
-                    className={cn(
-                      "h-9 hover:bg-primary hover:text-secondary",
-                      !isLoading && !data?.starter && "pointer-events-none",
-                    )}
-                    isSubmitting={isSubmitting === 1}
-                  >
-                    Choose starter plan
-                  </SubmitButton>
-                </Link>
-              </TooltipTrigger>
-              {!isLoading && !data?.starter && (
-                <TooltipContent className="text-xs max-w-[300px]">
-                  <p>
-                    This plan is not applicable since you have exceeded the
-                    limits for this subscription (users or bank connections).
-                  </p>
-                </TooltipContent>
-              )}
-            </Tooltip>
-          </div>
-        </div>
-
-        {/* Pro Plan */}
-        <div className="flex flex-col p-6 border border-primary bg-background relative">
-          <div className="absolute top-6 right-6 rounded-full text-[#878787] text-[9px] font-normal border px-2 py-1 font-mono">
-            Limited offer
-          </div>
-          <h2 className="text-xl text-left mb-2">Pro</h2>
-          <div className="mt-1 flex items-baseline">
-            <span
-              className={cn(
-                "text-2xl font-medium tracking-tight",
-                "line-through text-[#878787]",
-              )}
-            >
-              $99
-            </span>
-            <span className="ml-1 text-2xl font-medium tracking-tight">
-              $49
-            </span>
-
-            <span className="ml-1 text-xl font-medium">/mo</span>
-            <span className="ml-2 text-xs text-muted-foreground">
-              Excl. VAT
-            </span>
-          </div>
-
-          <div className="mt-4">
-            <h3 className="text-xs font-medium uppercase tracking-wide text-left text-[#878787] font-mono">
-              INCLUDING
-            </h3>
-            <ul className="mt-4 space-y-2">
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">
-                  Send up to 50 invoices per month
-                </span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">10 connected banks</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Unlimited bank accounts</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Financial overview</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Time Tracker</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">500 inbox items per month</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Customer management</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Export CSV & reports</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">Assistant</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">100GB Vault Storage</span>
-              </li>
-              <li className="flex items-start">
-                <Check className="h-4 w-4 text-primary flex-shrink-0 mr-2" />
-                <span className="text-xs">10 users</span>
-              </li>
-            </ul>
-          </div>
-
-          <div className="mt-8 border-t border-border pt-4">
-            <Link
-              prefetch={false}
-              href={`/api/checkout?plan=pro&teamId=${user?.team?.id}&isDesktop=${isDesktop}&planType=pro`}
-            >
-              <SubmitButton
-                className="h-9"
-                onClick={() => setIsSubmitting(2)}
-                isSubmitting={isSubmitting === 2}
-              >
-                Choose pro plan
-              </SubmitButton>
-            </Link>
-          </div>
-        </div>
-      </div>
-    </TooltipProvider>
+    <PlanCards
+      onCurrencyChange={setCheckoutCurrency}
+      renderStarterAction={(billingPeriod) => (
+        <SubmitButton
+          className="w-full bg-background border border-border text-foreground font-sans text-sm py-3 px-4 hover:bg-muted transition-colors"
+          onClick={() =>
+            handleCheckout(
+              "starter",
+              billingPeriod === "yearly" ? "starter_yearly" : "starter",
+            )
+          }
+          isSubmitting={isSubmitting}
+        >
+          Upgrade
+        </SubmitButton>
+      )}
+      renderProAction={(billingPeriod) => (
+        <SubmitButton
+          className="w-full btn-inverse font-sans text-sm py-3 px-4 transition-colors"
+          onClick={() =>
+            handleCheckout(
+              "pro",
+              billingPeriod === "yearly" ? "pro_yearly" : "pro",
+            )
+          }
+          isSubmitting={isSubmitting}
+        >
+          Upgrade
+        </SubmitButton>
+      )}
+    />
   );
 }

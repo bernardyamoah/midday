@@ -7,7 +7,7 @@ import {
   updateTagSchema,
 } from "@api/schemas/tags";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import {
   createTag,
   deleteTag,
@@ -103,6 +103,7 @@ app.openapi(
     tags: ["Tags"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: createTagSchema,
@@ -115,7 +116,7 @@ app.openapi(
         description: "Tag created",
         content: {
           "application/json": {
-            schema: tagsResponseSchema,
+            schema: tagResponseSchema,
           },
         },
       },
@@ -129,7 +130,7 @@ app.openapi(
 
     const result = await createTag(db, { teamId, ...body });
 
-    return c.json(validateResponse(result, tagResponseSchema));
+    return c.json(validateResponse(result, tagResponseSchema), 201);
   },
 );
 
@@ -145,6 +146,7 @@ app.openapi(
     request: {
       params: updateTagSchema.pick({ id: true }),
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateTagSchema.pick({ name: true }),

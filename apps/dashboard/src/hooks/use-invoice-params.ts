@@ -1,10 +1,13 @@
-import { useQueryStates } from "nuqs";
+import { parseAsBoolean, useQueryStates } from "nuqs";
 import { createLoader, parseAsString, parseAsStringEnum } from "nuqs/server";
 
 const invoiceParamsSchema = {
   selectedCustomerId: parseAsString,
-  type: parseAsStringEnum(["edit", "create", "details", "success"]),
+  invoiceType: parseAsStringEnum(["edit", "create", "details", "success"]),
   invoiceId: parseAsString,
+  editRecurringId: parseAsString,
+  emailPreview: parseAsBoolean,
+  canvas: parseAsBoolean,
 };
 
 export function useInvoiceParams() {

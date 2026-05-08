@@ -1,13 +1,5 @@
 "use client";
 
-import { AssignUser } from "@/components/assign-user";
-import { SelectAccount } from "@/components/select-account";
-import { SelectCategory } from "@/components/select-category";
-import { SelectCurrency } from "@/components/select-currency";
-import { TransactionAttachments } from "@/components/transaction-attachments";
-import { useUpdateTransactionCategory } from "@/hooks/use-update-transaction-category";
-import { useUserQuery } from "@/hooks/use-user";
-import { useTRPC } from "@/trpc/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { utc } from "@date-fns/utc";
 import { uniqueCurrencies } from "@midday/location/currencies";
@@ -30,6 +22,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format, formatISO } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
 import { useDebounceValue } from "usehooks-ts";
+import { AssignUser } from "@/components/assign-user";
+import { SelectAccount } from "@/components/select-account";
+import { SelectCategory } from "@/components/select-category";
+import { SelectCurrency } from "@/components/select-currency";
+import { TransactionAttachments } from "@/components/transaction-attachments";
+import { useInvalidateTransactionQueries } from "@/hooks/use-invalidate-transaction-queries";
+import { useUpdateTransactionCategory } from "@/hooks/use-update-transaction-category";
+import { useUserQuery } from "@/hooks/use-user";
+import { useTRPC } from "@/trpc/client";
 
 type Transaction = RouterOutputs["transactions"]["getById"];
 
@@ -40,6 +41,7 @@ type Props = {
 export function TransactionEditForm({ transaction }: Props) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const invalidateTransactionQueries = useInvalidateTransactionQueries();
   const [isOpen, setIsOpen] = useState(false);
   const { data: user } = useUserQuery();
   const { data: accounts } = useQuery(
@@ -56,19 +58,27 @@ export function TransactionEditForm({ transaction }: Props) {
 
   const updateTransactionMutation = useMutation(
     trpc.transactions.update.mutationOptions({
-      onSuccess: () => {
-        queryClient.invalidateQueries({
-          queryKey: trpc.transactions.get.infiniteQueryKey(),
-        });
+      onSuccess: (_, variables) => {
+        // If category or internal (exclude from reports) changed, invalidate reports
+        if ("categorySlug" in variables || "internal" in variables) {
+          invalidateTransactionQueries();
+        } else {
+          // Otherwise just invalidate transaction queries
+          queryClient.invalidateQueries({
+            queryKey: trpc.transactions.get.infiniteQueryKey(),
+          });
 
-        queryClient.invalidateQueries({
-          queryKey: trpc.transactions.getById.queryKey({ id: transaction.id }),
-        });
+          queryClient.invalidateQueries({
+            queryKey: trpc.transactions.getById.queryKey({
+              id: transaction.id,
+            }),
+          });
 
-        // Invalidate global search
-        queryClient.invalidateQueries({
-          queryKey: trpc.search.global.queryKey(),
-        });
+          // Invalidate global search
+          queryClient.invalidateQueries({
+            queryKey: trpc.search.global.queryKey(),
+          });
+        }
       },
       onMutate: async (variables) => {
         // Cancel any outgoing refetches
@@ -257,9 +267,6 @@ export function TransactionEditForm({ transaction }: Props) {
   return (
     <div className="space-y-8">
       <div>
-        <Label htmlFor="transactionType" className="mb-2 block">
-          Transaction Type
-        </Label>
         <div className="flex w-full border border-border bg-muted">
           <Button
             type="button"
@@ -347,24 +354,9 @@ export function TransactionEditForm({ transaction }: Props) {
             placeholder="0.00"
             allowNegative={false}
             onValueChange={(values) => {
+              // Only update local state - the debounced effect handles the mutation
               if (values.floatValue !== undefined) {
-                const positiveValue = Math.abs(values.floatValue);
-                setAmount(positiveValue);
-
-                // Update amount with correct sign based on transaction type
-                const finalAmount =
-                  transactionType === "expense"
-                    ? -positiveValue
-                    : positiveValue;
-
-                // Ensure we're comparing numbers
-                const currentAmount = Number(transaction.amount);
-                if (finalAmount !== currentAmount) {
-                  updateTransactionMutation.mutate({
-                    id: transaction.id,
-                    amount: finalAmount,
-                  });
-                }
+                setAmount(Math.abs(values.floatValue));
               }
             }}
           />
@@ -443,6 +435,7 @@ export function TransactionEditForm({ transaction }: Props) {
             <PopoverContent className="w-auto p-0" align="end">
               <Calendar
                 mode="single"
+                weekStartsOn={user?.weekStartsOnMonday ? 1 : 0}
                 selected={transaction.date ? utc(transaction.date) : undefined}
                 onSelect={(value) => {
                   if (value) {
@@ -529,10 +522,6 @@ export function TransactionEditForm({ transaction }: Props) {
               <TransactionAttachments
                 id={transaction.id}
                 data={transaction.attachments}
-                onUpload={(files) => {
-                  // Note: Attachments are handled by TransactionAttachments component
-                  // The component manages its own state and updates the transaction
-                }}
               />
             </div>
           </AccordionContent>
@@ -540,12 +529,12 @@ export function TransactionEditForm({ transaction }: Props) {
 
         <div className="mt-6 mb-4">
           <Label htmlFor="settings" className="mb-2 block font-medium text-md">
-            Exclude from analytics
+            Exclude from reports
           </Label>
           <div className="flex flex-row items-center justify-between">
             <div className="space-y-0.5 pr-4">
               <p className="text-xs text-muted-foreground">
-                Exclude this transaction from analytics like profit, expense and
+                Exclude this transaction from reports like profit, expense and
                 revenue. This is useful for internal transfers between accounts
                 to avoid double-counting.
               </p>

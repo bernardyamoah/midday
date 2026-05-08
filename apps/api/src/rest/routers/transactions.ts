@@ -18,8 +18,7 @@ import {
 } from "@api/schemas/transactions";
 import { createAdminClient } from "@api/services/supabase";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { z } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import {
   createTransaction,
   createTransactions,
@@ -223,6 +222,7 @@ app.openapi(
 
     return c.json(
       validateResponse(result, transactionAttachmentPreSignedUrlResponseSchema),
+      200,
     );
   },
 );
@@ -238,6 +238,7 @@ app.openapi(
     tags: ["Transactions"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: createTransactionSchema,
@@ -267,6 +268,59 @@ app.openapi(
 app.openapi(
   createRoute({
     method: "patch",
+    path: "/bulk",
+    summary: "Bulk update transactions",
+    operationId: "updateTransactions",
+    "x-speakeasy-name-override": "updateMany",
+    description:
+      "Bulk update transactions for the authenticated team. If there's no change, returns it as it is.",
+    tags: ["Transactions"],
+    request: {
+      body: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: updateTransactionsSchema,
+          },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Transactions updated",
+        content: {
+          "application/json": {
+            schema: transactionsResponseSchema,
+          },
+        },
+      },
+    },
+    middleware: [withRequiredScope("transactions.write")],
+  }),
+  async (c) => {
+    const db = c.get("db");
+    const teamId = c.get("teamId");
+    const userId = c.get("session").user.id;
+    const params = c.req.valid("json");
+
+    const result = await updateTransactions(db, {
+      teamId,
+      userId,
+      ...params,
+    });
+
+    return c.json(
+      validateResponse(
+        { meta: { hasPreviousPage: false, hasNextPage: false }, data: result },
+        transactionsResponseSchema,
+      ),
+    );
+  },
+);
+
+app.openapi(
+  createRoute({
+    method: "patch",
     path: "/{id}",
     summary: "Update a transaction",
     operationId: "updateTransaction",
@@ -277,6 +331,7 @@ app.openapi(
     request: {
       params: getTransactionByIdSchema.pick({ id: true }),
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateTransactionSchema.omit({ id: true }),
@@ -316,53 +371,6 @@ app.openapi(
 
 app.openapi(
   createRoute({
-    method: "patch",
-    path: "/bulk",
-    summary: "Bulk update transactions",
-    operationId: "updateTransactions",
-    "x-speakeasy-name-override": "updateMany",
-    description:
-      "Bulk update transactions for the authenticated team. If there's no change, returns it as it is.",
-    tags: ["Transactions"],
-    request: {
-      body: {
-        content: {
-          "application/json": {
-            schema: updateTransactionsSchema,
-          },
-        },
-      },
-    },
-    responses: {
-      200: {
-        description: "Transactions updated",
-        content: {
-          "application/json": {
-            schema: transactionsResponseSchema,
-          },
-        },
-      },
-    },
-    middleware: [withRequiredScope("transactions.write")],
-  }),
-  async (c) => {
-    const db = c.get("db");
-    const teamId = c.get("teamId");
-    const userId = c.get("session").user.id;
-    const params = c.req.valid("json");
-
-    const result = await updateTransactions(db, {
-      teamId,
-      userId,
-      ...params,
-    });
-
-    return c.json(validateResponse(result, transactionsResponseSchema));
-  },
-);
-
-app.openapi(
-  createRoute({
     method: "post",
     path: "/bulk",
     summary: "Bulk create transactions",
@@ -372,6 +380,7 @@ app.openapi(
     tags: ["Transactions"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: createTransactionsSchema,
@@ -403,15 +412,7 @@ app.openapi(
   },
 );
 
-// app.post(
-//   "/:id/attachments",
-//   describeRoute({
-//     description: "Upload an attachment to a transaction",
-//     tags: ["Transactions"],
-//   }),
-// );
-
-// NOTE: This endpoint needs to be registred before :id delete
+// NOTE: This endpoint needs to be registered before :id delete
 app.openapi(
   createRoute({
     method: "delete",
@@ -424,6 +425,7 @@ app.openapi(
     tags: ["Transactions"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: deleteTransactionsSchema,

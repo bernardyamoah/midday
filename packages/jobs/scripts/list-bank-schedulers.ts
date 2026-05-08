@@ -27,7 +27,7 @@ async function listBankSchedulers() {
         perPage: 200,
       });
 
-      if (!schedulesPage || !schedulesPage.data) {
+      if (!schedulesPage?.data) {
         break;
       }
 
@@ -76,9 +76,9 @@ async function listBankSchedulers() {
 
     // Display each scheduler
     schedulerInfos.forEach((scheduler, index) => {
-      const status = scheduler.enabled ? "🟢 Enabled" : "🔴 Disabled";
+      const status = scheduler.enabled ? "Enabled" : "Disabled";
 
-      console.log(`📋 Schedule ${index + 1}:`);
+      console.log(`Schedule ${index + 1}:`);
       console.log(`  └─ ID: ${scheduler.id}`);
       console.log(`     Status: ${status}`);
       console.log(`     Cron: ${scheduler.cron || "N/A"}`);
@@ -94,7 +94,7 @@ async function listBankSchedulers() {
     const enabledCount = schedulerInfos.filter((s) => s.enabled).length;
     const disabledCount = schedulerInfos.filter((s) => !s.enabled).length;
 
-    console.log("📊 Summary:");
+    console.log("Summary:");
     console.log(
       `Total bank-sync-scheduler schedules: ${schedulerInfos.length}`,
     );
@@ -127,5 +127,5 @@ if (require.main === module) {
   main();
 }
 
-export { listBankSchedulers };
 export type { SchedulerInfo };
+export { listBankSchedulers };

@@ -1,13 +1,15 @@
-import { useDocumentParams } from "@/hooks/use-document-params";
-import { useUserQuery } from "@/hooks/use-user";
-import { useTRPC } from "@/trpc/client";
-import { formatDate } from "@/utils/format";
+import { TZDate } from "@date-fns/tz";
 import { Badge } from "@midday/ui/badge";
 import { Combobox } from "@midday/ui/combobox";
 import { Icons } from "@midday/ui/icons";
+import { formatDate } from "@midday/utils/format";
 import { useQuery } from "@tanstack/react-query";
+import { format } from "date-fns";
 import { useState } from "react";
 import { useDebounceValue } from "usehooks-ts";
+import { useDocumentParams } from "@/hooks/use-document-params";
+import { useUserQuery } from "@/hooks/use-user";
+import { useTRPC } from "@/trpc/client";
 import { FilePreview } from "./file-preview";
 import { FormatAmount } from "./format-amount";
 
@@ -40,7 +42,7 @@ export function SelectAttachment({
   const { data: items, isLoading } = useQuery({
     ...trpc.search.attachments.queryOptions({
       q: debouncedValue.length > 0 ? debouncedValue : undefined,
-      transactionId: debouncedValue.length > 0 ? undefined : transactionId,
+      transactionId,
       limit: debouncedValue.length > 0 ? 30 : 3,
     }),
     enabled: Boolean(debouncedValue.length > 0 || transactionId), // Enable for search OR suggestions
@@ -50,11 +52,8 @@ export function SelectAttachment({
     onSelect(item);
   };
 
-  // Only create options if we have items and should show results
   const hasResults = items && items.length > 0;
-  // Only show results when actively searching or when combobox is open AND user has typed something
-  // Don't show suggestions when just focusing the input
-  const shouldShowResults = isOpen && Boolean(debouncedValue) && hasResults;
+  const shouldShowResults = isOpen && hasResults;
 
   const options = hasResults
     ? items.map((item, index) => {
@@ -81,14 +80,16 @@ export function SelectAttachment({
           const parts: string[] = [];
           if (item.customerName) parts.push(item.customerName);
           if (item.dueDate) {
-            parts.push(formatDate(item.dueDate, user?.dateFormat, true));
+            // Use TZDate for invoice dates (stored as UTC midnight)
+            const tzDate = new TZDate(item.dueDate, "UTC");
+            parts.push(format(tzDate, user?.dateFormat ?? "MMM d"));
           }
           secondaryText = parts.length > 0 ? parts.join(" • ") : undefined;
         } else {
           // For inbox items: date is most important for matching, then description if available
           const parts: string[] = [];
           if (item.date) {
-            parts.push(formatDate(item.date, user?.dateFormat, true));
+            parts.push(formatDate(item.date, user?.dateFormat));
           }
           // Add description if available and not too long (truncate if needed)
           if (item.description && item.description.length > 0) {
@@ -102,9 +103,8 @@ export function SelectAttachment({
           secondaryText = parts.length > 0 ? parts.join(" • ") : undefined;
         }
 
-        const isSmartSuggestion = debouncedValue.length === 0 && transactionId;
         const showBestMatch =
-          isSmartSuggestion && index === 0 && items?.length > 1;
+          !!transactionId && index === 0 && items?.length > 1;
 
         return {
           id: item.id,
@@ -130,6 +130,7 @@ export function SelectAttachment({
                             : item.contentType || "application/pdf"
                         }
                         filePath={filePath!}
+                        lazy
                       />
                     </button>
                   ) : (
@@ -186,7 +187,7 @@ export function SelectAttachment({
         ...opt,
         name: opt.name!,
       }))}
-      isLoading={isLoading && Boolean(debouncedValue)} // Only show loading when actively searching
+      isLoading={isLoading}
       classNameList="mt-2 max-h-[161px]"
       open={shouldShowResults} // Only open when we should show results
       onOpenChange={setIsOpen}

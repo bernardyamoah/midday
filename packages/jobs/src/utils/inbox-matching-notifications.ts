@@ -1,6 +1,6 @@
 import type { Database } from "@midday/db/client";
+import type { MatchResult } from "@midday/db/queries";
 import { getInboxById, getTransactionById } from "@midday/db/queries";
-import type { MatchResult } from "@midday/db/queries/transaction-matching";
 import { logger, tasks } from "@trigger.dev/sdk";
 
 // Helper function to trigger appropriate notifications based on matching results
@@ -13,10 +13,15 @@ export async function triggerMatchingNotification({
   db: Database;
   teamId: string;
   inboxId: string;
-  result: {
-    action: "auto_matched" | "suggestion_created";
-    suggestion: MatchResult;
-  };
+  result:
+    | {
+        action: "auto_matched";
+        suggestion: MatchResult;
+      }
+    | {
+        action: "suggestion_created";
+        suggestion: MatchResult;
+      };
 }) {
   try {
     // Get inbox and transaction details
@@ -33,8 +38,8 @@ export async function triggerMatchingNotification({
       return;
     }
 
-    const documentName =
-      inboxItem.displayName || inboxItem.fileName || "Document";
+    const fileName = inboxItem.fileName?.replace(/\.[^.]+$/, "") || "Document";
+    const documentName = inboxItem.displayName || fileName;
     const transactionName = transactionItem.name || "Transaction";
 
     // Check if this is a cross-currency match (for context, not routing)
@@ -83,8 +88,8 @@ export async function triggerMatchingNotification({
         documentCurrency: inboxItem.currency || "USD",
         transactionAmount: transactionItem.amount || 0,
         transactionCurrency: transactionItem.currency || "USD",
-        amount: inboxItem.amount || 0, // Keep for backward compatibility
-        currency: inboxItem.currency || transactionItem.currency || "USD", // Keep for backward compatibility
+        amount: inboxItem.amount || 0,
+        currency: inboxItem.currency || transactionItem.currency || "USD",
         transactionName,
         confidenceScore: result.suggestion.confidenceScore,
         matchType: result.suggestion.matchType as

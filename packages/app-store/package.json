@@ -6,27 +6,31 @@
   "scripts": {
     "clean": "rm -rf .turbo node_modules",
     "lint": "biome check .",
-    "format": "biome format --write .",
+    "lint:fix": "biome check --write .",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^1.3.22",
-    "@slack/bolt": "^4.4.0",
-    "@slack/web-api": "^7.9.2",
-    "ai": "^4.3.19",
-    "zod": "3.25.64",
-    "@midday/jobs": "workspace:*"
+    "@slack/bolt": "^4.6.0",
+    "@slack/web-api": "^7.15.0",
+    "@supabase/supabase-js": "^2.101.1",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^24.0.1",
-    "typescript": "^5.9.2"
+    "@types/node": "^25.5.0",
+    "typescript": "catalog:"
   },
   "exports": {
     ".": "./src/index.ts",
     "./types": "./src/types.ts",
+    "./logos": "./src/logos.ts",
+    "./oauth-errors": "./src/oauth-errors.ts",
     "./slack": "./src/slack/index.ts",
-    "./slack-notifications": "./src/slack/lib/notifications/transactions.ts",
-    "./slack-client": "./src/slack/lib/client.ts",
-    "./db": "./src/db/index.ts"
+    "./slack/server": "./src/slack/server/index.ts",
+    "./slack-notifications": "./src/slack/server/notifications/transactions.ts",
+    "./slack-client": "./src/slack/server/client.ts",
+    "./whatsapp": "./src/whatsapp/index.ts",
+    "./xero": "./src/xero/config.ts",
+    "./quickbooks": "./src/quick-books/config.ts",
+    "./fortnox": "./src/fortnox/config.ts"
   }
 }

@@ -1,11 +1,11 @@
-import type { TZDate } from "@date-fns/tz";
+import { TZDate } from "@date-fns/tz";
 import {
   differenceInDays,
   differenceInMonths,
   format,
-  isSameYear,
   startOfDay,
 } from "date-fns";
+import { normalizeCurrencyCode } from "./currency";
 
 export function formatSize(bytes: number): string {
   const units = ["byte", "kilobyte", "megabyte", "gigabyte", "terabyte"];
@@ -40,16 +40,32 @@ export function formatAmount({
     return;
   }
 
-  // Fix: locale can be null, but Intl.NumberFormat expects string | string[] | undefined
-  // So, if locale is null, pass undefined instead
+  const safeAmount = Number.isFinite(amount) ? amount : 0;
   const safeLocale = locale ?? undefined;
 
-  return Intl.NumberFormat(safeLocale, {
-    style: "currency",
-    currency,
-    minimumFractionDigits,
-    maximumFractionDigits,
-  }).format(amount);
+  const formatDecimal = () =>
+    Intl.NumberFormat(safeLocale, {
+      style: "decimal",
+      minimumFractionDigits: minimumFractionDigits ?? 2,
+      maximumFractionDigits: maximumFractionDigits ?? 2,
+    }).format(safeAmount);
+
+  if (currency.toUpperCase() === "XXX") {
+    return formatDecimal();
+  }
+
+  const normalizedCurrency = normalizeCurrencyCode(currency);
+
+  try {
+    return Intl.NumberFormat(safeLocale, {
+      style: "currency",
+      currency: normalizedCurrency,
+      minimumFractionDigits,
+      maximumFractionDigits,
+    }).format(safeAmount);
+  } catch {
+    return formatDecimal();
+  }
 }
 
 export function secondsToHoursAndMinutes(seconds: number) {
@@ -84,36 +100,13 @@ export function calculateAvgBurnRate(data: BurnRateData[] | null) {
   return data?.reduce((acc, curr) => acc + curr.value, 0) / data?.length;
 }
 
-export function formatDate(
-  date: string,
-  dateFormat?: string | null,
-  checkYear = true,
-) {
-  if (checkYear && isSameYear(new Date(), new Date(date))) {
-    return format(new Date(date), "MMM d");
-  }
-
-  return format(new Date(date), dateFormat ?? "P");
-}
-
-export function getInitials(value: string) {
-  const formatted = value.toUpperCase().replace(/[\s.-]/g, "");
-
-  if (formatted.split(" ").length > 1) {
-    return `${formatted.charAt(0)}${formatted.charAt(1)}`;
-  }
-
-  if (value.length > 1) {
-    return formatted.charAt(0) + formatted.charAt(1);
-  }
-
-  return formatted.charAt(0);
-}
-
 export function formatAccountName({
   name = "",
   currency,
-}: { name?: string; currency?: string | null }) {
+}: {
+  name?: string;
+  currency?: string | null;
+}) {
   if (currency) {
     return `${name} (${currency})`;
   }
@@ -149,11 +142,15 @@ export function formatDateRange(dates: TZDate[]): string {
 }
 
 export function getDueDateStatus(dueDate: string): string {
-  const now = new Date();
-  const due = new Date(dueDate);
+  // Parse due date as UTC (it's stored as UTC midnight)
+  const due = new TZDate(dueDate, "UTC");
 
-  // Set both dates to the start of their respective days
-  const nowDay = startOfDay(now);
+  // Get current date in UTC for consistent comparison
+  const now = new Date();
+  const nowUTC = new TZDate(now.toISOString(), "UTC");
+
+  // Compare at the day level in UTC
+  const nowDay = startOfDay(nowUTC);
   const dueDay = startOfDay(due);
 
   const diffDays = differenceInDays(dueDay, nowDay);
@@ -197,4 +194,26 @@ export function formatRelativeTime(date: Date): string {
   }
 
   return "just now";
+}
+
+export function formatCompactAmount(
+  amount: number,
+  locale?: string | null,
+): string {
+  const absAmount = Math.abs(amount);
+  const safeLocale = locale ?? "en-US";
+
+  if (absAmount >= 1000000) {
+    const formatted = (absAmount / 1000000).toLocaleString(safeLocale, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    return `${formatted}m`;
+  }
+  // Always show in thousands notation
+  const formatted = (absAmount / 1000).toLocaleString(safeLocale, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+  return `${formatted}k`;
 }

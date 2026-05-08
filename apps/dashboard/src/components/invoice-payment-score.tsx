@@ -1,10 +1,10 @@
 "use client";
 
-import { useI18n } from "@/locales/client";
-import { useTRPC } from "@/trpc/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@midday/ui/card";
 import { Skeleton } from "@midday/ui/skeleton";
 import { useSuspenseQuery } from "@tanstack/react-query";
+import { useI18n } from "@/locales/client";
+import { useTRPC } from "@/trpc/client";
 import { PaymentScoreVisualizer } from "./payment-score-visualizer";
 
 export function InvoicePaymentScoreSkeleton() {
@@ -34,23 +34,21 @@ export function InvoicePaymentScore() {
   return (
     <Card>
       <CardHeader className="pb-2 flex flex-col xl:flex-row justify-between">
-        <CardTitle className="font-mono font-medium text-2xl">
+        <CardTitle className="font-medium text-2xl font-serif">
           {/* @ts-expect-error */}
           {t(`payment_status.${data?.paymentStatus}`)}
         </CardTitle>
 
-        <PaymentScoreVisualizer
-          score={data?.score}
-          paymentStatus={data?.paymentStatus}
-        />
+        <PaymentScoreVisualizer score={data?.score ?? 0} count={15} />
       </CardHeader>
 
       <CardContent className="sm:hidden xl:flex">
         <div className="flex flex-col gap-2">
           <div>Payment score</div>
           <div className="text-sm text-muted-foreground">
-            {/* @ts-expect-error */}
-            {t(`payment_status_description.${data?.paymentStatus}`)}
+            {data?.paymentStatus &&
+              // @ts-expect-error
+              t(`payment_status_description.${data?.paymentStatus}`)}
           </div>
         </div>
       </CardContent>

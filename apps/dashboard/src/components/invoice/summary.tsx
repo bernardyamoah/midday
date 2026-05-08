@@ -1,8 +1,7 @@
-import { useTRPC } from "@/trpc/client";
 import { calculateTotal } from "@midday/invoice/calculate";
-import { useMutation } from "@tanstack/react-query";
 import { useCallback, useEffect } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
+import { useTemplateUpdate } from "@/hooks/use-template-update";
 import { AnimatedNumber } from "../animated-number";
 import { FormatAmount } from "../format-amount";
 import { AmountInput } from "./amount-input";
@@ -12,11 +11,7 @@ import { VATInput } from "./vat-input";
 
 export function Summary() {
   const { control, setValue } = useFormContext();
-
-  const trpc = useTRPC();
-  const updateTemplateMutation = useMutation(
-    trpc.invoiceTemplate.upsert.mutationOptions(),
-  );
+  const { updateTemplate } = useTemplateUpdate();
 
   const includeDecimals = useWatch({
     control,
@@ -60,6 +55,11 @@ export function Summary() {
     name: "template.includeDiscount",
   });
 
+  const includeLineItemTax = useWatch({
+    control,
+    name: "template.includeLineItemTax",
+  });
+
   const lineItems = useWatch({
     control,
     name: "lineItems",
@@ -81,6 +81,7 @@ export function Summary() {
     vatRate,
     includeVat,
     includeTax,
+    includeLineItemTax,
     discount: discount ?? 0,
   });
 
@@ -127,10 +128,10 @@ export function Summary() {
           className="flex-shrink-0 min-w-6"
           name="template.subtotalLabel"
           onSave={(value) => {
-            updateTemplateMutation.mutate({ subtotalLabel: value });
+            updateTemplate({ subtotalLabel: value });
           }}
         />
-        <span className="text-right font-mono text-[11px] text-[#878787]">
+        <span className="text-right text-[11px] text-[#878787]">
           <FormatAmount
             amount={subTotal}
             maximumFractionDigits={maximumFractionDigits}
@@ -145,7 +146,7 @@ export function Summary() {
           <LabelInput
             name="template.discountLabel"
             onSave={(value) => {
-              updateTemplateMutation.mutate({ discountLabel: value });
+              updateTemplate({ discountLabel: value });
             }}
           />
 
@@ -153,7 +154,7 @@ export function Summary() {
             placeholder="0"
             allowNegative={false}
             name="discount"
-            className="text-right font-mono text-[11px] text-[#878787] border-none"
+            className="text-right text-[11px] text-[#878787] border-none"
           />
         </div>
       )}
@@ -165,14 +166,14 @@ export function Summary() {
               className="flex-shrink-0 min-w-5"
               name="template.vatLabel"
               onSave={(value) => {
-                updateTemplateMutation.mutate({ vatLabel: value });
+                updateTemplate({ vatLabel: value });
               }}
             />
 
             <VATInput />
           </div>
 
-          <span className="text-right font-mono text-[11px] text-[#878787]">
+          <span className="text-right text-[11px] text-[#878787]">
             <FormatAmount
               amount={totalVAT}
               maximumFractionDigits={2}
@@ -183,21 +184,42 @@ export function Summary() {
         </div>
       )}
 
-      {includeTax && (
+      {includeTax && !includeLineItemTax && (
         <div className="flex justify-between items-center py-1">
           <div className="flex items-center gap-1">
             <LabelInput
               className="flex-shrink-0 min-w-5"
               name="template.taxLabel"
               onSave={(value) => {
-                updateTemplateMutation.mutate({ taxLabel: value });
+                updateTemplate({ taxLabel: value });
               }}
             />
 
             <TaxInput />
           </div>
 
-          <span className="text-right font-mono text-[11px] text-[#878787]">
+          <span className="text-right text-[11px] text-[#878787]">
+            <FormatAmount
+              amount={totalTax}
+              maximumFractionDigits={2}
+              currency={currency}
+              locale={locale}
+            />
+          </span>
+        </div>
+      )}
+
+      {includeLineItemTax && totalTax > 0 && (
+        <div className="flex justify-between items-center py-1">
+          <LabelInput
+            className="flex-shrink-0 min-w-5"
+            name="template.taxLabel"
+            onSave={(value) => {
+              updateTemplate({ taxLabel: value });
+            }}
+          />
+
+          <span className="text-right text-[11px] text-[#878787]">
             <FormatAmount
               amount={totalTax}
               maximumFractionDigits={2}
@@ -212,15 +234,17 @@ export function Summary() {
         <LabelInput
           name="template.totalSummaryLabel"
           onSave={(value) => {
-            updateTemplateMutation.mutate({ totalSummaryLabel: value });
+            updateTemplate({ totalSummaryLabel: value });
           }}
         />
-        <span className="text-right font-mono font-medium text-[21px]">
+        <span className="text-right font-medium text-[21px]">
           <AnimatedNumber
             value={total}
             currency={currency}
             maximumFractionDigits={
-              includeTax || includeVat ? 2 : maximumFractionDigits
+              includeTax || includeVat || includeLineItemTax
+                ? 2
+                : maximumFractionDigits
             }
           />
         </span>

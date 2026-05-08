@@ -1,10 +1,10 @@
-import { getQueryClient, trpc } from "@/trpc/server";
-import { formatSize } from "@/utils/format";
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
 import type { Metadata } from "next";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 import { notFound, redirect } from "next/navigation";
+import { getQueryClient, trpc } from "@/trpc/server";
+import { formatSize } from "@/utils/format";
 
 type Props = {
   params: Promise<{ shortId: string }>;
@@ -48,8 +48,8 @@ export default async function Page({ params }: Props) {
   return (
     <div className="h-screen p-2">
       <header className="absolute top-0 left-0 z-30 w-full">
-        <div className="p-6 md:p-8">
-          <Icons.LogoSmall className="h-8 w-auto" />
+        <div className="p-6">
+          <Icons.LogoSmall className="h-6 w-auto" />
         </div>
       </header>
 

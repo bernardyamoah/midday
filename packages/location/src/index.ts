@@ -1,25 +1,53 @@
 import { headers } from "next/headers";
 import flags from "./country-flags";
 import { currencies } from "./currencies";
-import { EU_COUNTRY_CODES } from "./eu-countries";
 import timezones from "./timezones.json";
+
+/**
+ * Parse the primary locale from an Accept-Language header value.
+ * Returns the first language tag (e.g. "en-US" from "en-US,en;q=0.9").
+ */
+export function parseLocale(acceptLanguage: string | null): string {
+  if (!acceptLanguage) return "en-US";
+  const primary = acceptLanguage.split(",")[0]?.trim();
+  if (!primary) return "en-US";
+  return primary.split(";")[0]?.trim() || "en-US";
+}
+
+/**
+ * Extract all location values from a resolved headers object (Cloudflare headers).
+ * Use this when you already have the headers and want to avoid multiple async calls.
+ */
+export function getLocationHeaders(headersList: {
+  get: (name: string) => string | null;
+}): {
+  country: string;
+  timezone: string;
+  locale: string;
+} {
+  return {
+    country: headersList.get("cf-ipcountry") || "SE",
+    timezone: headersList.get("cf-timezone") || "Europe/Berlin",
+    locale: parseLocale(headersList.get("accept-language")),
+  };
+}
 
 export async function getCountryCode() {
   const headersList = await headers();
 
-  return headersList.get("x-vercel-ip-country") || "SE";
+  return headersList.get("cf-ipcountry") || "SE";
 }
 
 export async function getTimezone() {
   const headersList = await headers();
 
-  return headersList.get("x-vercel-ip-timezone") || "Europe/Berlin";
+  return headersList.get("cf-timezone") || "Europe/Berlin";
 }
 
 export async function getLocale() {
   const headersList = await headers();
 
-  return headersList.get("x-vercel-ip-locale") || "en-US";
+  return parseLocale(headersList.get("accept-language"));
 }
 
 export function getTimezones() {
@@ -52,21 +80,11 @@ export async function getDateFormat() {
   return "yyyy-MM-dd";
 }
 
-export async function isEU() {
-  const countryCode = await getCountryCode();
-
-  if (countryCode && EU_COUNTRY_CODES.includes(countryCode)) {
-    return true;
-  }
-
-  return false;
-}
-
 export async function getCountry() {
   const country = await getCountryCode();
 
   // Type guard to ensure country is a key of flags
-  if (country && Object.prototype.hasOwnProperty.call(flags, country)) {
+  if (country && Object.hasOwn(flags, country)) {
     return flags[country as keyof typeof flags];
   }
 

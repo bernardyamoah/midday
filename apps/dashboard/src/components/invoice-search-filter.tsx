@@ -1,10 +1,5 @@
 "use client";
 
-import { generateInvoiceFilters } from "@/actions/ai/filters/generate-invoice-filters";
-import { useInvoiceFilterParams } from "@/hooks/use-invoice-filter-params";
-import { useI18n } from "@/locales/client";
-import { useTRPC } from "@/trpc/client";
-import { Calendar } from "@midday/ui/calendar";
 import { cn } from "@midday/ui/cn";
 import {
   DropdownMenu,
@@ -21,10 +16,12 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { Input } from "@midday/ui/input";
 import { useQuery } from "@tanstack/react-query";
-import { readStreamableValue } from "ai/rsc";
-import { formatISO } from "date-fns";
 import { useRef, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
+import { useInvoiceFilterParams } from "@/hooks/use-invoice-filter-params";
+import { useI18n } from "@/locales/client";
+import { useTRPC } from "@/trpc/client";
+import { DateRangeFilter } from "./date-range-filter";
 import { FilterList } from "./filter-list";
 
 const allowedStatuses = [
@@ -34,13 +31,13 @@ const allowedStatuses = [
   "unpaid",
   "canceled",
   "scheduled",
+  "refunded",
 ];
 
 export function InvoiceSearchFilter() {
-  const [prompt, setPrompt] = useState("");
+  const [input, setInput] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const t = useI18n();
-  const [streaming, setStreaming] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
   const trpc = useTRPC();
 
@@ -57,13 +54,13 @@ export function InvoiceSearchFilter() {
   useHotkeys(
     "esc",
     () => {
-      setPrompt("");
+      setInput("");
       setFilter(null);
       setIsOpen(false);
     },
     {
       enableOnFormTags: true,
-      enabled: Boolean(prompt),
+      enabled: Boolean(input),
     },
   );
 
@@ -76,61 +73,16 @@ export function InvoiceSearchFilter() {
     const value = evt.target.value;
 
     if (value) {
-      setPrompt(value);
+      setInput(value);
     } else {
       setFilter(null);
-      setPrompt("");
+      setInput("");
     }
   };
 
-  const handleSubmit = async () => {
-    // If the user is typing a query with multiple words, we want to stream the results
-    if (prompt.split(" ").length > 1) {
-      setStreaming(true);
-
-      setStreaming(true);
-
-      const { object } = await generateInvoiceFilters(
-        prompt,
-        `Invoice payment statuses: ${statusFilters.map((filter) => filter.name).join(", ")}
-         Customers: ${customersData?.data?.map((customer) => customer.name).join(", ")}
-      `,
-      );
-
-      let finalObject = {};
-
-      for await (const partialObject of readStreamableValue(object)) {
-        if (partialObject) {
-          finalObject = {
-            ...finalObject,
-            statuses: Array.isArray(partialObject?.statuses)
-              ? partialObject?.statuses
-              : partialObject?.statuses
-                ? [partialObject.statuses]
-                : null,
-            customers:
-              partialObject?.customers?.map(
-                (name: string) =>
-                  customersData?.data?.find(
-                    (customer) => customer.name === name,
-                  )?.id,
-              ) ?? null,
-            q: partialObject?.name ?? null,
-            start: partialObject?.start ?? null,
-            end: partialObject?.end ?? null,
-          };
-        }
-      }
-
-      setFilter({
-        q: null,
-        ...finalObject,
-      });
-
-      setStreaming(false);
-    } else {
-      setFilter({ q: prompt.length > 0 ? prompt : null });
-    }
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    setFilter({ q: input.length > 0 ? input : null });
   };
 
   const validFilters = Object.fromEntries(
@@ -154,9 +106,9 @@ export function InvoiceSearchFilter() {
           <Icons.Search className="absolute pointer-events-none left-3 top-[11px]" />
           <Input
             ref={inputRef}
-            placeholder="Search or filter"
+            placeholder="Search invoices..."
             className="pl-9 w-full sm:w-[350px] pr-8"
-            value={prompt}
+            value={input}
             onChange={handleSearch}
             autoComplete="off"
             autoCapitalize="none"
@@ -181,7 +133,6 @@ export function InvoiceSearchFilter() {
 
         <FilterList
           filters={validFilters}
-          loading={streaming}
           onRemove={setFilter}
           statusFilters={statusFilters}
           customers={customersData?.data}
@@ -207,23 +158,10 @@ export function InvoiceSearchFilter() {
                 alignOffset={-4}
                 className="p-0"
               >
-                <Calendar
-                  mode="range"
-                  initialFocus
-                  selected={{
-                    from: filter?.start ? new Date(filter.start) : undefined,
-                    to: filter?.end ? new Date(filter.end) : undefined,
-                  }}
-                  onSelect={(range) => {
-                    setFilter({
-                      start: range?.from
-                        ? formatISO(range.from, { representation: "date" })
-                        : null,
-                      end: range?.to
-                        ? formatISO(range.to, { representation: "date" })
-                        : null,
-                    });
-                  }}
+                <DateRangeFilter
+                  start={filter?.start}
+                  end={filter?.end}
+                  onSelect={setFilter}
                 />
               </DropdownMenuSubContent>
             </DropdownMenuPortal>
@@ -240,11 +178,12 @@ export function InvoiceSearchFilter() {
               <DropdownMenuSubContent
                 sideOffset={14}
                 alignOffset={-4}
-                className="p-0"
+                className="p-0 max-h-[300px] overflow-auto"
               >
                 {customersData?.data?.map((customer) => (
                   <DropdownMenuCheckboxItem
                     key={customer.id}
+                    onSelect={(e) => e.preventDefault()}
                     onCheckedChange={() => {
                       setFilter({
                         customers: filter?.customers?.includes(customer.id)
@@ -282,6 +221,7 @@ export function InvoiceSearchFilter() {
                 {statusFilters?.map((status) => (
                   <DropdownMenuCheckboxItem
                     key={status.id}
+                    onSelect={(e) => e.preventDefault()}
                     onCheckedChange={() => {
                       setFilter({
                         statuses: filter?.statuses?.includes(status.id)
@@ -293,6 +233,45 @@ export function InvoiceSearchFilter() {
                     {status.name}
                   </DropdownMenuCheckboxItem>
                 ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuPortal>
+          </DropdownMenuSub>
+        </DropdownMenuGroup>
+
+        <DropdownMenuGroup>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <Icons.Repeat className="mr-2 h-4 w-4" />
+              <span>Type</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuPortal>
+              <DropdownMenuSubContent
+                sideOffset={14}
+                alignOffset={-4}
+                className="p-0"
+              >
+                <DropdownMenuCheckboxItem
+                  checked={filter?.recurring === true}
+                  onSelect={(e) => e.preventDefault()}
+                  onCheckedChange={(checked) => {
+                    setFilter({
+                      recurring: checked ? true : null,
+                    });
+                  }}
+                >
+                  Recurring
+                </DropdownMenuCheckboxItem>
+                <DropdownMenuCheckboxItem
+                  checked={filter?.recurring === false}
+                  onSelect={(e) => e.preventDefault()}
+                  onCheckedChange={(checked) => {
+                    setFilter({
+                      recurring: checked ? false : null,
+                    });
+                  }}
+                >
+                  One-time
+                </DropdownMenuCheckboxItem>
               </DropdownMenuSubContent>
             </DropdownMenuPortal>
           </DropdownMenuSub>

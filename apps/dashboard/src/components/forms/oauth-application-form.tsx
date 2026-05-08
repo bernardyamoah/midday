@@ -1,12 +1,5 @@
 "use client";
 
-import { useOAuthApplicationParams } from "@/hooks/use-oauth-application-params";
-import { useUpload } from "@/hooks/use-upload";
-import { useUserQuery } from "@/hooks/use-user";
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useOAuthSecretModalStore } from "@/store/oauth-secret-modal";
-import { useTRPC } from "@/trpc/client";
-import { RESOURCES } from "@/utils/scopes";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import {
   SCOPES,
@@ -38,13 +31,19 @@ import { Switch } from "@midday/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@midday/ui/tabs";
 import { Textarea } from "@midday/ui/textarea";
 import { useToast } from "@midday/ui/use-toast";
-import { stripSpecialCharacters } from "@midday/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { nanoid } from "nanoid";
 import { useEffect, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useFieldArray } from "react-hook-form";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { useOAuthApplicationParams } from "@/hooks/use-oauth-application-params";
+import { useUpload } from "@/hooks/use-upload";
+import { useUserQuery } from "@/hooks/use-user";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useOAuthSecretModalStore } from "@/store/oauth-secret-modal";
+import { useTRPC } from "@/trpc/client";
+import { RESOURCES } from "@/utils/scopes";
 import { LogoUpload } from "../logo-upload";
 import { ScopeSelector } from "../scope-selector";
 
@@ -192,14 +191,11 @@ export function OAuthApplicationForm({ data }: Props) {
           queryKey: trpc.oauthApplications.list.queryKey(),
         });
 
-        // Also invalidate the individual get query for consistency
         queryClient.invalidateQueries({
           queryKey: trpc.oauthApplications.get.queryKey(),
         });
 
-        // Close the sheet first
         setParams(null);
-        // Then open the modal with the secret
         if (result.clientSecret && result.name) {
           setSecret(result.clientSecret, result.name);
         }
@@ -346,7 +342,7 @@ export function OAuthApplicationForm({ data }: Props) {
       form.setValue("screenshots", [...currentScreenshots, ...uploadedUrls], {
         shouldDirty: true,
       });
-    } catch (error) {
+    } catch (_error) {
       toast({
         title: "Upload failed",
         description: "Failed to upload screenshots. Please try again.",
@@ -843,7 +839,7 @@ export function OAuthApplicationForm({ data }: Props) {
           </Accordion>
         </div>
 
-        <div className="sticky bottom-0 bg-[#FAFAF9] dark:bg-[#121212] border-t pt-3 mt-4">
+        <div className="sticky bottom-0 bg-[#FAFAF9] dark:bg-[#0C0C0C] border-t pt-3 mt-4">
           <SubmitButton
             type="submit"
             className="w-full"

@@ -20,12 +20,33 @@ export function InboxStatus({ item }: Props) {
     return null;
   }
 
+  // Show status for "other" (non-financial) documents
+  if (item.status === "other" || item.type === "other") {
+    return (
+      <TooltipProvider delayDuration={0}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex space-x-1.5 items-center px-1.5 py-0.5 text-[10px] cursor-default border text-muted-foreground">
+              <span>Document</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent sideOffset={10} className="text-xs">
+            <p>
+              This document isn't an invoice or receipt — <br />
+              no transaction matching required
+            </p>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
   if (item.status === "analyzing") {
     return (
       <TooltipProvider delayDuration={0}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex space-x-1 items-center p-1 text-[#878787] text-[10px] px-1.5 py-0.5 cursor-default font-mono border">
+            <div className="flex space-x-1 items-center p-1 text-[#878787] text-[10px] px-1.5 py-0.5 cursor-default border">
               <Spinner size={14} className="stroke-primary" />
               <span>Analyzing</span>
             </div>
@@ -46,7 +67,7 @@ export function InboxStatus({ item }: Props) {
       <TooltipProvider delayDuration={0}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex space-x-1.5 items-center px-1.5 py-0.5 text-[10px] cursor-default font-mono border">
+            <div className="flex space-x-1.5 items-center px-1.5 py-0.5 text-[10px] cursor-default border">
               <div className="w-1.5 h-1.5 bg-[#FFD02B] rounded-full" />
               <span>Suggested match</span>
             </div>
@@ -67,7 +88,7 @@ export function InboxStatus({ item }: Props) {
       <TooltipProvider delayDuration={0}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="p-1 text-[10px] px-1.5 py-0.5 cursor-default font-mono inline-block border">
+            <div className="p-1 text-[10px] px-1.5 py-0.5 cursor-default inline-block border">
               <span>Pending</span>
             </div>
           </TooltipTrigger>
@@ -87,7 +108,7 @@ export function InboxStatus({ item }: Props) {
       <TooltipProvider delayDuration={0}>
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex space-x-1 items-center px-1.5 py-0.5 text-[10px] cursor-default font-mono border">
+            <div className="flex space-x-1 items-center px-1.5 py-0.5 text-[10px] cursor-default border">
               <Icons.Check className="size-3.5 mt-[1px]" />
               <span>Matched</span>
             </div>
@@ -107,7 +128,7 @@ export function InboxStatus({ item }: Props) {
     <TooltipProvider delayDuration={0}>
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="flex space-x-1 items-center px-1.5 py-0.5 text-[10px] cursor-default font-mono border">
+          <div className="flex space-x-1 items-center px-1.5 py-0.5 text-[10px] cursor-default border">
             <span>No match</span>
           </div>
         </TooltipTrigger>

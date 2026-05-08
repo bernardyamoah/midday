@@ -2,38 +2,68 @@ import { z } from "@hono/zod-openapi";
 
 export const getDocumentsSchema = z
   .object({
-    cursor: z.string().nullable().optional().openapi({
-      description:
-        "A cursor for pagination. Pass the value returned from the previous response to get the next page.",
-      example: "20",
-    }),
-    sort: z
-      .array(z.string(), z.string())
+    cursor: z
+      .string()
       .nullable()
       .optional()
+      .describe("Pagination cursor from previous response")
       .openapi({
         description:
-          "Sorting order as a tuple: [field, direction]. Example: ['name', 'asc'].",
+          "A cursor for pagination. Pass the value returned from the previous response to get the next page.",
+        example: "20",
+      }),
+    sort: z
+      .array(z.string().min(1))
+      .max(2)
+      .min(2)
+      .nullable()
+      .optional()
+      .describe(
+        "Sort as [column, direction]. Currently documents are sorted by created date descending.",
+      )
+      .openapi({
+        description:
+          "Sort as [column, direction]. Currently documents are sorted by created date descending.",
         param: {
           in: "query",
         },
       }),
-    pageSize: z.coerce.number().min(1).max(100).optional().openapi({
-      description: "Number of documents to return per page.",
-      example: 20,
-    }),
-    q: z.string().nullable().optional().openapi({
-      description: "Search query string to filter documents by text.",
-      example: "invoice",
-    }),
+    pageSize: z.coerce
+      .number()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe("Number of documents per page (1-100)")
+      .openapi({
+        description: "Number of documents to return per page.",
+        example: 20,
+      }),
+    q: z
+      .string()
+      .nullable()
+      .optional()
+      .describe("Search query to filter documents")
+      .openapi({
+        description: "Search query string to filter documents by text.",
+        example: "invoice",
+      }),
     tags: z
       .array(z.string())
       .nullable()
       .optional()
+      .describe("Filter by tag IDs")
       .openapi({
         description: "Array of tag IDs to filter documents by tags.",
         example: ["tag1", "tag2"],
       }),
+    start: z.string().nullable().optional().openapi({
+      description: "Start date for filtering documents (ISO 8601 date).",
+      example: "2024-01-01",
+    }),
+    end: z.string().nullable().optional().openapi({
+      description: "End date for filtering documents (ISO 8601 date).",
+      example: "2024-12-31",
+    }),
   })
   .openapi({
     description: "Query parameters for listing documents.",
@@ -75,6 +105,19 @@ export const deleteDocumentSchema = z.object({
 
 export const deleteDocumentResponseSchema = z.object({
   id: z.string(),
+});
+
+export const reprocessDocumentSchema = z.object({
+  id: z
+    .string()
+    .uuid()
+    .openapi({
+      description: "The ID of the document to reprocess",
+      param: {
+        in: "path",
+        name: "id",
+      },
+    }),
 });
 
 export const processDocumentSchema = z.array(

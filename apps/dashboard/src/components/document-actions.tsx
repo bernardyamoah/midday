@@ -1,13 +1,14 @@
 "use client";
 
-import { useDocumentParams } from "@/hooks/use-document-params";
-import { downloadFile } from "@/lib/download";
-import { useTRPC } from "@/trpc/client";
 import { Button } from "@midday/ui/button";
 import { Icons } from "@midday/ui/icons";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useCopyToClipboard } from "usehooks-ts";
+import { useDocumentParams } from "@/hooks/use-document-params";
+import { useFileUrl } from "@/hooks/use-file-url";
+import { downloadFile } from "@/lib/download";
+import { useTRPC } from "@/trpc/client";
 
 type Props = {
   showDelete?: boolean;
@@ -22,6 +23,15 @@ export function DocumentActions({ showDelete = false, filePath }: Props) {
   const { setParams, params } = useDocumentParams();
 
   const filename = filePath?.at(-1);
+  const { url: downloadUrl } = useFileUrl(
+    filePath
+      ? {
+          type: "download",
+          filePath: filePath.join("/"),
+          filename,
+        }
+      : null,
+  );
 
   const shortLinkMutation = useMutation(
     trpc.shortLinks.createForDocument.mutationOptions({
@@ -66,13 +76,11 @@ export function DocumentActions({ showDelete = false, filePath }: Props) {
         variant="ghost"
         size="icon"
         onClick={() => {
-          if (filePath && filename) {
-            downloadFile(
-              `/api/download/file?path=${filePath.join("/")}&filename=${filename}`,
-              filename,
-            );
+          if (downloadUrl && filename) {
+            downloadFile(downloadUrl, filename);
           }
         }}
+        disabled={!downloadUrl}
       >
         <Icons.ArrowCoolDown className="size-4" />
       </Button>

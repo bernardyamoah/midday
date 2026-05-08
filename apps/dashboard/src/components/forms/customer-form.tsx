@@ -1,10 +1,7 @@
 "use client";
 
-import { useCustomerParams } from "@/hooks/use-customer-params";
-import { useInvoiceParams } from "@/hooks/use-invoice-params";
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useTRPC } from "@/trpc/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
+import { LogEvents } from "@midday/events/events";
 import {
   Accordion,
   AccordionContent,
@@ -12,6 +9,7 @@ import {
   AccordionTrigger,
 } from "@midday/ui/accordion";
 import { Button } from "@midday/ui/button";
+import { EmailTagInput } from "@midday/ui/email-tag-input";
 import {
   Form,
   FormControl,
@@ -23,17 +21,31 @@ import {
 } from "@midday/ui/form";
 import { Input } from "@midday/ui/input";
 import { Label } from "@midday/ui/label";
+import { Skeleton } from "@midday/ui/skeleton";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { Textarea } from "@midday/ui/textarea";
+import { isValidEmailList } from "@midday/utils";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { z } from "zod";
+import dynamic from "next/dynamic";
+import { z } from "zod/v3";
+import { useCustomerParams } from "@/hooks/use-customer-params";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useTRPC } from "@/trpc/client";
 import { CountrySelector } from "../country-selector";
-import {
-  type AddressDetails,
-  SearchAddressInput,
-} from "../search-address-input";
+import type { AddressDetails } from "../search-address-input";
 import { SelectTags } from "../select-tags";
 import { VatNumberInput } from "../vat-number-input";
+
+// Dynamically import Google Maps component (saves ~200KB from initial bundle)
+const SearchAddressInput = dynamic(
+  () => import("../search-address-input").then((mod) => mod.SearchAddressInput),
+  {
+    ssr: false,
+    loading: () => <Skeleton className="h-9 w-full" />,
+  },
+);
 
 const formSchema = z.object({
   id: z.string().uuid().optional(),
@@ -43,13 +55,9 @@ const formSchema = z.object({
   email: z.string().email({
     message: "Email is not valid.",
   }),
-  billingEmail: z
-    .string()
-    .email({
-      message: "Email is not valid.",
-    })
-    .nullable()
-    .optional(),
+  billingEmail: z.string().nullable().optional().refine(isValidEmailList, {
+    message: "All emails must be valid and unique.",
+  }),
   phone: z.string().optional(),
   website: z
     .string()
@@ -100,15 +108,20 @@ type Props = {
 export function CustomerForm({ data }: Props) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
+  const { track } = useOpenPanel();
   const isEdit = !!data;
 
   const { setParams: setCustomerParams, name } = useCustomerParams();
-  const { setParams: setInvoiceParams, type } = useInvoiceParams();
-  const fromInvoice = type === "create" || type === "edit";
+  const { setParams: setInvoiceParams, invoiceType } = useInvoiceParams();
+  const fromInvoice = invoiceType === "create" || invoiceType === "edit";
 
   const upsertCustomerMutation = useMutation(
     trpc.customers.upsert.mutationOptions({
       onSuccess: (data) => {
+        if (!isEdit) {
+          track(LogEvents.CustomerCreated.name);
+        }
+
         queryClient.invalidateQueries({
           queryKey: trpc.customers.get.infiniteQueryKey(),
         });
@@ -164,12 +177,13 @@ export function CustomerForm({ data }: Props) {
   });
 
   const onSelectAddress = (address: AddressDetails) => {
-    form.setValue("addressLine1", address.address_line_1);
-    form.setValue("city", address.city);
-    form.setValue("state", address.state);
-    form.setValue("country", address.country);
-    form.setValue("countryCode", address.country_code);
-    form.setValue("zip", address.zip);
+    const opts = { shouldDirty: true, shouldValidate: true } as const;
+    form.setValue("addressLine1", address.address_line_1, opts);
+    form.setValue("city", address.city, opts);
+    form.setValue("state", address.state, opts);
+    form.setValue("country", address.country, opts);
+    form.setValue("countryCode", address.country_code, opts);
+    form.setValue("zip", address.zip, opts);
   };
 
   const handleEmailBlur = (e: React.FocusEvent<HTMLInputElement>) => {
@@ -184,6 +198,15 @@ export function CustomerForm({ data }: Props) {
   };
 
   const handleSubmit = (data: z.infer<typeof formSchema>) => {
+    // Extract domain from email if website is not set (handles Enter key submission)
+    let website = data.website || null;
+    if (!website && data.email) {
+      const domain = data.email.split("@").at(1);
+      if (domain && !excludedDomains.includes(domain)) {
+        website = domain;
+      }
+    }
+
     const formattedData = {
       ...data,
       id: data.id || undefined,
@@ -195,7 +218,7 @@ export function CustomerForm({ data }: Props) {
       country: data.country || null,
       contact: data.contact || null,
       note: data.note || null,
-      website: data.website || null,
+      website,
       phone: data.phone || null,
       zip: data.zip || null,
       vatNumber: data.vatNumber || null,
@@ -279,24 +302,15 @@ export function CustomerForm({ data }: Props) {
                             Billing Email
                           </FormLabel>
                           <FormControl>
-                            <Input
-                              {...field}
-                              value={field.value ?? ""}
-                              onChange={(e) => {
-                                field.onChange(
-                                  e.target.value.trim().length > 0
-                                    ? e.target.value.trim()
-                                    : null,
-                                );
-                              }}
-                              placeholder="finance@example.com"
-                              type="email"
-                              autoComplete="off"
+                            <EmailTagInput
+                              value={field.value}
+                              onChange={field.onChange}
+                              placeholder="finance@example.com, accounting@example.com"
                             />
                           </FormControl>
                           <FormDescription>
-                            This is an additional email that will be used to
-                            send invoices to.
+                            Additional emails to BCC when sending invoices.
+                            Press Enter or comma to add.
                           </FormDescription>
                           <FormMessage />
                         </FormItem>

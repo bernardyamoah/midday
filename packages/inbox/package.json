@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./connector": "./src/connector.ts",
+    "./errors": "./src/errors.ts",
     "./utils": "./src/utils.ts"
   },
   "scripts": {
@@ -13,14 +14,15 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck": "tsc --noEmit",
-    "test": "bun test src"
+    "test": "bun test --exit src"
   },
   "dependencies": {
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "@midday/db": "workspace:*",
     "@midday/encryption": "workspace:*",
     "@midday/supabase": "workspace:*",
-    "googleapis": "^150.0.1",
-    "zod": "3.25.64",
-    "@microsoft/microsoft-graph-client": "^3.0.7",
-    "@azure/msal-node": "^3.6.0"
+    "@midday/utils": "workspace:*",
+    "googleapis": "^171.4.0",
+    "zod": "catalog:"
   }
 }

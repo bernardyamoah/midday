@@ -1,6 +1,5 @@
 "use client";
 
-import { useI18n } from "@/locales/client";
 import type { RouterOutputs } from "@api/trpc/routers/_app";
 import { Button } from "@midday/ui/button";
 import { cn } from "@midday/ui/cn";
@@ -20,16 +19,33 @@ import { getTaxTypeLabel } from "@midday/utils/tax";
 import { DotsHorizontalIcon } from "@radix-ui/react-icons";
 import type { ColumnDef } from "@tanstack/react-table";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import * as React from "react";
+import type { Dispatch, SetStateAction } from "react";
+import { useI18n } from "@/locales/client";
 
-interface CategoriesTableMeta {
+export interface CategoriesTableMeta {
   deleteCategory: (id: string) => void;
   onEdit: (id: string) => void;
   expandedCategories: Set<string>;
-  setExpandedCategories: (categories: Set<string>) => void;
+  setExpandedCategories: Dispatch<SetStateAction<Set<string>>>;
+  searchValue?: string;
+  setSearchValue?: Dispatch<SetStateAction<string>>;
 }
 
 export type Category = RouterOutputs["transactionCategories"]["get"][number];
+
+// Check if a category should show a tooltip
+function shouldShowCategoryTooltip(category: any): boolean {
+  // Show tooltip if category has a user-defined description
+  if (category.description) {
+    return true;
+  }
+  // Show tooltip for system categories (they have localized descriptions)
+  if (category.system) {
+    return true;
+  }
+  // Don't show tooltip for user-created categories without descriptions
+  return false;
+}
 
 // Component to display category description from localization
 function CategoryTooltip({ category }: { category: any }) {
@@ -40,16 +56,20 @@ function CategoryTooltip({ category }: { category: any }) {
     return <span>{category.description}</span>;
   }
 
-  // Priority 2: System description from localization
-  try {
-    return (
-      // @ts-expect-error - slug is not nullable
-      <span>{t(`transaction_categories.${category.slug}`)}</span>
-    );
-  } catch {
-    // Fallback if translation not found
-    return <span>Category description not available</span>;
+  // Priority 2: System description from localization (only for system categories)
+  if (category.system) {
+    try {
+      return (
+        // @ts-expect-error - slug is not nullable
+        <span>{t(`transaction_categories.${category.slug}`)}</span>
+      );
+    } catch {
+      // Fallback if translation not found
+      return <span>Category description not available</span>;
+    }
   }
+
+  return null;
 }
 
 // Flatten categories to include both parents and children with hierarchy info
@@ -130,36 +150,54 @@ export const columns: ColumnDef<any>[] = [
             className="size-3"
             style={{ backgroundColor: row.original.color ?? undefined }}
           />
-          <TooltipProvider delayDuration={0}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  className={cn(
-                    hasChildren && !isChild
-                      ? "cursor-pointer"
-                      : "cursor-default",
-                  )}
-                  onClick={
-                    hasChildren && !isChild
-                      ? (e) => {
-                          e.stopPropagation();
-                          toggleExpanded();
-                        }
-                      : undefined
-                  }
+          {shouldShowCategoryTooltip(row.original) ? (
+            <TooltipProvider delayDuration={0}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className={cn(
+                      hasChildren && !isChild
+                        ? "cursor-pointer"
+                        : "cursor-default",
+                    )}
+                    onClick={
+                      hasChildren && !isChild
+                        ? (e) => {
+                            e.stopPropagation();
+                            toggleExpanded();
+                          }
+                        : undefined
+                    }
+                  >
+                    {row.getValue("name")}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent
+                  className="px-3 py-1.5 text-xs"
+                  side="right"
+                  sideOffset={10}
                 >
-                  {row.getValue("name")}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent
-                className="px-3 py-1.5 text-xs"
-                side="right"
-                sideOffset={10}
-              >
-                <CategoryTooltip category={row.original} />
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+                  <CategoryTooltip category={row.original} />
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <span
+              className={cn(
+                hasChildren && !isChild ? "cursor-pointer" : "cursor-default",
+              )}
+              onClick={
+                hasChildren && !isChild
+                  ? (e) => {
+                      e.stopPropagation();
+                      toggleExpanded();
+                    }
+                  : undefined
+              }
+            >
+              {row.getValue("name")}
+            </span>
+          )}
 
           {row.original.system && (
             <div className="pl-2">

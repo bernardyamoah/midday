@@ -1,7 +1,5 @@
 "use client";
 
-import { useInvoiceParams } from "@/hooks/use-invoice-params";
-import { useTRPC } from "@/trpc/client";
 import { cn } from "@midday/ui/cn";
 import {
   Tooltip,
@@ -9,9 +7,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@midday/ui/tooltip";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useFormContext } from "react-hook-form";
+import { useInvoiceParams } from "@/hooks/use-invoice-params";
+import { useTemplateUpdate } from "@/hooks/use-template-update";
+import { useTRPC } from "@/trpc/client";
 import { Input } from "./input";
 import { LabelInput } from "./label-input";
 
@@ -24,11 +25,9 @@ export function InvoiceNo() {
   } = useFormContext();
   const invoiceNumber = watch("invoiceNumber");
   const trpc = useTRPC();
-  const updateTemplateMutation = useMutation(
-    trpc.invoiceTemplate.upsert.mutationOptions(),
-  );
+  const { updateTemplate } = useTemplateUpdate();
 
-  const { type } = useInvoiceParams();
+  const { invoiceType } = useInvoiceParams();
 
   const { data } = useQuery(
     trpc.invoice.searchInvoiceNumber.queryOptions(
@@ -37,7 +36,7 @@ export function InvoiceNo() {
       },
       {
         // Only search for invoice number if we are creating a new invoice
-        enabled: type === "create" && invoiceNumber !== "",
+        enabled: invoiceType === "create" && invoiceNumber !== "",
         // Never cache the result
         gcTime: 0,
       },
@@ -61,13 +60,11 @@ export function InvoiceNo() {
         <LabelInput
           name="template.invoiceNoLabel"
           onSave={(value) => {
-            updateTemplateMutation.mutate({ invoiceNoLabel: value });
+            updateTemplate({ invoiceNoLabel: value });
           }}
           className="truncate"
         />
-        <span className="text-[11px] text-[#878787] font-mono flex-shrink-0">
-          :
-        </span>
+        <span className="text-[11px] text-[#878787] flex-shrink-0">:</span>
       </div>
 
       <TooltipProvider delayDuration={100}>

@@ -100,6 +100,41 @@ export const allNotificationTypes: NotificationType[] = [
     category: "invoices",
     order: 1,
   },
+  {
+    type: "invoice_refunded",
+    channels: ["in_app"],
+    showInSettings: true,
+    category: "invoices",
+    order: 1,
+  },
+  {
+    type: "recurring_series_completed",
+    channels: ["in_app"],
+    showInSettings: true,
+    category: "invoices",
+    order: 1,
+  },
+  {
+    type: "recurring_series_started",
+    channels: ["in_app"],
+    showInSettings: true,
+    category: "invoices",
+    order: 1,
+  },
+  {
+    type: "recurring_series_paused",
+    channels: ["in_app"],
+    showInSettings: true,
+    category: "invoices",
+    order: 1,
+  },
+  {
+    type: "recurring_invoice_upcoming",
+    channels: ["in_app", "email"],
+    showInSettings: true,
+    category: "invoices",
+    order: 1,
+  },
 ];
 
 // Get all notification types (including hidden ones)

@@ -1,8 +1,9 @@
 import type { Context } from "@api/rest/types";
 import { updateUserSchema, userSchema } from "@api/schemas/users";
 import { validateResponse } from "@api/utils/validate-response";
-import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { getUserById, updateUser } from "@midday/db/queries";
+import { generateFileKey } from "@midday/encryption";
 import { withRequiredScope } from "../middleware";
 
 const app = new OpenAPIHono<Context>();
@@ -34,7 +35,15 @@ app.openapi(
 
     const result = await getUserById(db, session.user.id);
 
-    return c.json(validateResponse(result, userSchema));
+    // Add fileKey if user has a teamId
+    const response = result
+      ? {
+          ...result,
+          fileKey: result.teamId ? await generateFileKey(result.teamId) : null,
+        }
+      : null;
+
+    return c.json(validateResponse(response, userSchema));
   },
 );
 
@@ -49,6 +58,7 @@ app.openapi(
     tags: ["Users"],
     request: {
       body: {
+        required: true,
         content: {
           "application/json": {
             schema: updateUserSchema,
@@ -73,12 +83,21 @@ app.openapi(
     const session = c.get("session");
     const body = c.req.valid("json");
 
-    const result = await updateUser(db, {
+    await updateUser(db, {
       id: session.user.id,
       ...body,
     });
 
-    return c.json(validateResponse(result, userSchema));
+    const result = await getUserById(db, session.user.id);
+
+    const response = result
+      ? {
+          ...result,
+          fileKey: result.teamId ? await generateFileKey(result.teamId) : null,
+        }
+      : null;
+
+    return c.json(validateResponse(response, userSchema));
   },
 );
 

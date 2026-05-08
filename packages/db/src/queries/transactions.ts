@@ -1,41 +1,53 @@
-import type { Database } from "@db/client";
 import {
-  bankAccounts,
-  bankConnections,
-  inbox,
-  tags,
-  transactionAttachments,
-  transactionCategories,
-  transactionEmbeddings,
-  type transactionFrequencyEnum,
-  transactionMatchSuggestions,
-  transactionTags,
-  transactions,
-  users,
-} from "@db/schema";
+  CONTRA_REVENUE_CATEGORIES,
+  REVENUE_CATEGORIES,
+} from "@midday/categories";
 import { buildSearchQuery } from "@midday/db/utils/search-query";
-import { logger } from "@midday/logger";
+import { createLoggerWithContext } from "@midday/logger";
 import { resolveTaxValues } from "@midday/utils/tax";
 import {
   and,
   asc,
-  cosineDistance,
   desc,
   eq,
-  gt,
   gte,
   inArray,
   isNull,
   lt,
   lte,
   ne,
+  not,
   or,
   sql,
 } from "drizzle-orm";
 import type { SQL } from "drizzle-orm/sql/sql";
 import { nanoid } from "nanoid";
+import type { Database } from "../client";
+import {
+  accountingSyncRecords,
+  bankAccounts,
+  bankConnections,
+  inbox,
+  tags,
+  transactionAttachments,
+  transactionCategories,
+  type transactionFrequencyEnum,
+  transactionMatchSuggestions,
+  transactions,
+  transactionTags,
+  users,
+} from "../schema";
+import {
+  calculateAmountScore,
+  calculateCurrencyScore,
+  calculateDateScore,
+  calculateNameScore,
+  scoreMatch,
+} from "../utils/transaction-matching";
 import { createActivity } from "./activities";
 import { type Attachment, createAttachments } from "./transaction-attachments";
+
+const logger = createLoggerWithContext("transactions");
 
 export type GetTransactionsParams = {
   teamId: string;
@@ -43,7 +55,17 @@ export type GetTransactionsParams = {
   sort?: string[] | null;
   pageSize?: number;
   q?: string | null;
-  statuses?: string[] | null;
+  statuses?:
+    | (
+        | "blank"
+        | "receipt_match"
+        | "in_review"
+        | "export_error"
+        | "exported"
+        | "excluded"
+        | "archived"
+      )[]
+    | null;
   attachments?: "include" | "exclude" | null;
   categories?: string[] | null;
   tags?: string[] | null;
@@ -53,9 +75,13 @@ export type GetTransactionsParams = {
   start?: string | null;
   end?: string | null;
   recurring?: string[] | null;
-  amount_range?: number[] | null;
+  amountRange?: number[] | null;
   amount?: string[] | null;
   manual?: "include" | "exclude" | null;
+  /** Filter by export status: true = only exported, false = only NOT exported, undefined = no filter */
+  exported?: boolean | null;
+  /** Filter by fulfillment: true = ready for review (has attachments OR status=completed), false = not ready */
+  fulfilled?: boolean | null;
 };
 
 // Helper type from schema if not already exported
@@ -84,8 +110,10 @@ export async function getTransactions(
     assignees: filterAssignees,
     recurring: filterRecurring,
     amount: filterAmount,
-    amount_range: filterAmountRange,
+    amountRange: filterAmountRange,
     manual: filterManual,
+    exported,
+    fulfilled,
   } = params;
 
   // Always start with teamId filter
@@ -103,8 +131,8 @@ export async function getTransactions(
 
   // Search query filter (name, description, or amount)
   if (q) {
-    const numericQ = Number.parseFloat(q);
-    if (!Number.isNaN(numericQ)) {
+    const numericQ = Number(q);
+    if (!Number.isNaN(numericQ) && q.trim() !== "") {
       whereConditions.push(sql`${transactions.amount} = ${numericQ}`);
     } else {
       const searchQuery = buildSearchQuery(q);
@@ -117,38 +145,186 @@ export async function getTransactions(
     }
   }
 
-  // Status filtering - simplified logic using direct EXISTS subqueries
-  if (statuses?.includes("uncompleted") || attachments === "exclude") {
-    // Transaction is NOT fulfilled (no attachments AND status is not completed) AND status is not excluded
-    whereConditions.push(
-      sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed') AND ${transactions.status} != 'excluded'`,
-    );
-  } else if (statuses?.includes("completed") || attachments === "include") {
-    // Transaction is fulfilled (has attachments OR status is completed)
-    whereConditions.push(
-      sql`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
-    );
-  } else if (statuses?.includes("excluded")) {
-    whereConditions.push(eq(transactions.status, "excluded"));
-  } else if (statuses?.includes("archived")) {
-    whereConditions.push(eq(transactions.status, "archived"));
-  } else {
-    // Default: pending, posted, or completed
-    whereConditions.push(
-      inArray(transactions.status, ["pending", "posted", "completed"]),
-    );
+  const isFulfilledCondition = sql`(
+    EXISTS (
+      SELECT 1
+      FROM ${transactionAttachments}
+      WHERE ${eq(transactionAttachments.transactionId, transactions.id)}
+      AND ${eq(transactionAttachments.teamId, teamId)}
+    ) OR ${transactions.status} = 'completed'
+  )`;
+
+  const isExportedCondition = sql`(
+    ${transactions.status} = 'exported' OR EXISTS (
+      SELECT 1
+      FROM ${accountingSyncRecords}
+      WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+      AND ${accountingSyncRecords.teamId} = ${teamId}
+      AND ${accountingSyncRecords.status} = 'synced'
+    )
+  )`;
+
+  const hasExportErrorCondition = sql`EXISTS (
+    SELECT 1
+    FROM ${accountingSyncRecords}
+    WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+    AND ${accountingSyncRecords.teamId} = ${teamId}
+    AND ${accountingSyncRecords.status} IN ('failed', 'partial')
+  )`;
+
+  const hasPendingSuggestionCondition = sql`EXISTS (
+    SELECT 1
+    FROM ${transactionMatchSuggestions}
+    WHERE ${transactionMatchSuggestions.transactionId} = ${transactions.id}
+    AND ${transactionMatchSuggestions.teamId} = ${teamId}
+    AND ${transactionMatchSuggestions.status} = 'pending'
+  )`;
+
+  const isActiveWorkflowCondition = sql`${transactions.status} NOT IN ('excluded', 'archived')`;
+
+  if (attachments === "exclude") {
+    whereConditions.push(sql`NOT (${isFulfilledCondition})`);
+  } else if (attachments === "include") {
+    whereConditions.push(isFulfilledCondition);
   }
 
-  // Categories filter
+  // UI status filters map to computed states. DB status remains unchanged.
+  if (statuses && statuses.length > 0) {
+    const statusConditions: SQL[] = [];
+
+    if (statuses.includes("blank")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND NOT (${isFulfilledCondition})
+          AND NOT (${isExportedCondition})
+          AND NOT (${hasExportErrorCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("receipt_match")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND ${hasPendingSuggestionCondition}
+          AND NOT (${isFulfilledCondition})
+          AND NOT (${isExportedCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("in_review")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND ${isFulfilledCondition}
+          AND NOT (${isExportedCondition})
+          AND NOT (${hasExportErrorCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("export_error")) {
+      statusConditions.push(
+        sql`(
+          ${isActiveWorkflowCondition}
+          AND ${hasExportErrorCondition}
+          AND NOT (${isExportedCondition})
+        )`,
+      );
+    }
+
+    if (statuses.includes("exported")) {
+      statusConditions.push(isExportedCondition);
+    }
+
+    if (statuses.includes("excluded")) {
+      statusConditions.push(eq(transactions.status, "excluded"));
+    }
+
+    if (statuses.includes("archived")) {
+      statusConditions.push(eq(transactions.status, "archived"));
+    }
+
+    if (statusConditions.length > 0) {
+      whereConditions.push(or(...statusConditions));
+    } else {
+      // All values were unrecognized — fall back to default exclusion so
+      // archived/excluded transactions don't leak into results.
+      whereConditions.push(isActiveWorkflowCondition);
+    }
+  } else {
+    // Default All tab behavior: hide excluded/archived unless explicitly filtered.
+    whereConditions.push(isActiveWorkflowCondition);
+  }
+
+  // Categories filter with child category expansion
   if (filterCategories && filterCategories.length > 0) {
-    const categoryConditions: (SQL | undefined)[] = [];
-    for (const categorySlug of filterCategories) {
-      if (categorySlug === "uncategorized") {
-        categoryConditions.push(isNull(transactions.categorySlug));
-      } else {
-        categoryConditions.push(eq(transactions.categorySlug, categorySlug));
+    const categorySlugs = filterCategories.filter(
+      (slug) => slug !== "uncategorized",
+    );
+
+    const expandedSlugs = new Set<string>(categorySlugs);
+
+    // Only query if we have category slugs (not just "uncategorized")
+    if (categorySlugs.length > 0) {
+      // Query categories to identify parents and get their IDs
+      const categories = await db
+        .select({
+          slug: transactionCategories.slug,
+          id: transactionCategories.id,
+          parentId: transactionCategories.parentId,
+        })
+        .from(transactionCategories)
+        .where(
+          and(
+            eq(transactionCategories.teamId, teamId),
+            inArray(transactionCategories.slug, categorySlugs),
+          ),
+        );
+
+      // Find parent category IDs (categories with no parentId)
+      const parentCategoryIds = categories
+        .filter((cat) => !cat.parentId)
+        .map((cat) => cat.id);
+
+      // Get all child category slugs for parent categories
+      if (parentCategoryIds.length > 0) {
+        const childCategories = await db
+          .select({ slug: transactionCategories.slug })
+          .from(transactionCategories)
+          .where(
+            and(
+              eq(transactionCategories.teamId, teamId),
+              inArray(transactionCategories.parentId, parentCategoryIds),
+            ),
+          );
+
+        // Add child slugs to the set (automatic deduplication)
+        for (const child of childCategories) {
+          if (child.slug) {
+            expandedSlugs.add(child.slug);
+          }
+        }
       }
     }
+
+    // Build filter conditions
+    const categoryConditions: (SQL | undefined)[] = [];
+
+    // Handle uncategorized separately
+    if (filterCategories.includes("uncategorized")) {
+      categoryConditions.push(isNull(transactions.categorySlug));
+    }
+
+    // Handle category slugs (now includes children, deduplicated)
+    if (expandedSlugs.size > 0) {
+      categoryConditions.push(
+        inArray(transactions.categorySlug, Array.from(expandedSlugs)),
+      );
+    }
+
     const definedCategoryConditions = categoryConditions.filter(
       (c) => c !== undefined,
     ) as SQL[];
@@ -192,7 +368,12 @@ export async function getTransactions(
     whereConditions.push(lt(transactions.amount, 0));
     whereConditions.push(ne(transactions.categorySlug, "transfer"));
   } else if (type === "income") {
-    whereConditions.push(eq(transactions.categorySlug, "income"));
+    whereConditions.push(
+      inArray(transactions.categorySlug, REVENUE_CATEGORIES),
+    );
+    whereConditions.push(
+      not(inArray(transactions.categorySlug, CONTRA_REVENUE_CATEGORIES)),
+    );
   }
 
   // Accounts filter
@@ -215,19 +396,51 @@ export async function getTransactions(
     );
   }
 
-  // Amount range filter
+  // Amount range filter - behavior depends on type filter:
+  // - type="expense": filter on negative amounts (-max to -min)
+  // - type="income": filter on positive amounts (min to max)
+  // - type=null: use ABS() to include both directions
   if (
     filterAmountRange &&
     filterAmountRange.length === 2 &&
-    typeof filterAmountRange[0] === "number" &&
-    typeof filterAmountRange[1] === "number"
+    filterAmountRange[0] != null &&
+    filterAmountRange[1] != null
   ) {
-    whereConditions.push(
-      gte(transactions.amount, Number(filterAmountRange[0])),
-    );
-    whereConditions.push(
-      lte(transactions.amount, Number(filterAmountRange[1])),
-    );
+    let minAmount = Number(filterAmountRange[0]);
+    let maxAmount = Number(filterAmountRange[1]);
+    if (!Number.isNaN(minAmount) && !Number.isNaN(maxAmount)) {
+      // Ensure min <= max
+      if (minAmount > maxAmount) {
+        [minAmount, maxAmount] = [maxAmount, minAmount];
+      }
+
+      if (type === "expense") {
+        // For expenses (negative amounts), filter between -maxAmount and -minAmount
+        // e.g., range [50, 100] filters amounts between -100 and -50
+        whereConditions.push(
+          sql`COALESCE(${transactions.baseAmount}, ${transactions.amount}) >= ${-maxAmount}`,
+        );
+        whereConditions.push(
+          sql`COALESCE(${transactions.baseAmount}, ${transactions.amount}) <= ${-minAmount}`,
+        );
+      } else if (type === "income") {
+        // For income (positive amounts), filter between minAmount and maxAmount
+        whereConditions.push(
+          sql`COALESCE(${transactions.baseAmount}, ${transactions.amount}) >= ${minAmount}`,
+        );
+        whereConditions.push(
+          sql`COALESCE(${transactions.baseAmount}, ${transactions.amount}) <= ${maxAmount}`,
+        );
+      } else {
+        // For "Any" type, use ABS() to include both positive and negative amounts
+        whereConditions.push(
+          sql`ABS(COALESCE(${transactions.baseAmount}, ${transactions.amount})) >= ${minAmount}`,
+        );
+        whereConditions.push(
+          sql`ABS(COALESCE(${transactions.baseAmount}, ${transactions.amount})) <= ${maxAmount}`,
+        );
+      }
+    }
   }
 
   // Specific amount filter (gte/lte)
@@ -245,6 +458,47 @@ export async function getTransactions(
     whereConditions.push(eq(transactions.manual, true));
   } else if (filterManual === "exclude") {
     whereConditions.push(eq(transactions.manual, false));
+  }
+
+  // Exported filter: true = only exported, false = only NOT exported
+  // A transaction is considered exported if status = 'exported' OR has a synced accounting record
+  if (exported === true) {
+    // Only exported transactions
+    whereConditions.push(
+      sql`(
+        ${transactions.status} = 'exported' OR EXISTS (
+          SELECT 1 FROM ${accountingSyncRecords}
+          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+          AND ${accountingSyncRecords.teamId} = ${teamId}
+          AND ${accountingSyncRecords.status} = 'synced'
+        )
+      )`,
+    );
+  } else if (exported === false) {
+    // Only NOT exported transactions (not synced to accounting)
+    // Also exclude 'excluded' and 'archived' to match getTransactionsReadyForExportCount
+    // Include 'exported' in exclusion list to maintain mutual exclusivity with exported === true
+    whereConditions.push(
+      sql`(
+        ${transactions.status} NOT IN ('exported', 'excluded', 'archived') AND NOT EXISTS (
+          SELECT 1 FROM ${accountingSyncRecords}
+          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+          AND ${accountingSyncRecords.teamId} = ${teamId}
+          AND ${accountingSyncRecords.status} = 'synced'
+        )
+      )`,
+    );
+  }
+
+  // Fulfilled filter: true = has attachments OR status=completed, false = no attachments AND status!=completed
+  if (fulfilled === true) {
+    whereConditions.push(
+      sql`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
+    );
+  } else if (fulfilled === false) {
+    whereConditions.push(
+      sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
+    );
   }
 
   const finalWhereConditions = whereConditions.filter(
@@ -272,6 +526,8 @@ export async function getTransactions(
       taxRate: transactions.taxRate,
       taxType: transactions.taxType,
       taxAmount: transactions.taxAmount,
+      baseAmount: transactions.baseAmount,
+      baseCurrency: transactions.baseCurrency,
       enrichmentCompleted: transactions.enrichmentCompleted,
       isFulfilled:
         sql<boolean>`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`.as(
@@ -283,6 +539,44 @@ export async function getTransactions(
           AND tms.team_id = ${teamId} 
           AND tms.status = 'pending'
         )`.as("hasPendingSuggestion"),
+      isExported: sql<boolean>`(
+          ${transactions.status} = 'exported' OR EXISTS (
+            SELECT 1 FROM ${accountingSyncRecords}
+            WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+            AND ${accountingSyncRecords.teamId} = ${teamId}
+            AND ${accountingSyncRecords.status} = 'synced'
+          )
+        )`.as("isExported"),
+      exportProvider: sql<string | null>`(
+          SELECT ${accountingSyncRecords.provider}
+          FROM ${accountingSyncRecords}
+          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+          AND ${accountingSyncRecords.teamId} = ${teamId}
+          AND ${accountingSyncRecords.status} = 'synced'
+          LIMIT 1
+        )`.as("exportProvider"),
+      exportedAt: sql<string | null>`(
+          SELECT ${accountingSyncRecords.syncedAt}
+          FROM ${accountingSyncRecords}
+          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+          AND ${accountingSyncRecords.teamId} = ${teamId}
+          AND ${accountingSyncRecords.status} = 'synced'
+          LIMIT 1
+        )`.as("exportedAt"),
+      hasExportError: sql<boolean>`EXISTS (
+          SELECT 1 FROM ${accountingSyncRecords}
+          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+          AND ${accountingSyncRecords.teamId} = ${teamId}
+          AND ${accountingSyncRecords.status} IN ('failed', 'partial')
+        )`.as("hasExportError"),
+      exportErrorCode: sql<string | null>`(
+          SELECT ${accountingSyncRecords.errorCode}
+          FROM ${accountingSyncRecords}
+          WHERE ${accountingSyncRecords.transactionId} = ${transactions.id}
+          AND ${accountingSyncRecords.teamId} = ${teamId}
+          AND ${accountingSyncRecords.status} IN ('failed', 'partial')
+          LIMIT 1
+        )`.as("exportErrorCode"),
       attachments: sql<
         Array<{
           id: string;
@@ -291,9 +585,11 @@ export async function getTransactions(
           type: string;
           size: number;
         }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${transactionAttachments.id}, 'filename', ${transactionAttachments.name}, 'path', ${transactionAttachments.path}, 'type', ${transactionAttachments.type}, 'size', ${transactionAttachments.size})) FILTER (WHERE ${transactionAttachments.id} IS NOT NULL), '[]'::json)`.as(
-        "attachments",
-      ),
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', ta.id, 'filename', ta.name, 'path', ta.path, 'type', ta.type, 'size', ta.size))
+        FROM ${transactionAttachments} ta
+        WHERE ta.transaction_id = ${transactions.id} AND ta.team_id = ${teamId}
+      ), '[]'::json)`.as("attachments"),
       assigned: {
         id: users.id,
         fullName: users.fullName,
@@ -317,11 +613,12 @@ export async function getTransactions(
         name: bankConnections.name,
         logoUrl: bankConnections.logoUrl,
       },
-      tags: sql<
-        Array<{ id: string; name: string | null }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${tags.id}, 'name', ${tags.name})) FILTER (WHERE ${tags.id} IS NOT NULL), '[]'::json)`.as(
-        "tags",
-      ),
+      tags: sql<Array<{ id: string; name: string | null }>>`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', t.id, 'name', t.name))
+        FROM ${transactionTags} tt
+        INNER JOIN ${tags} t ON t.id = tt.tag_id
+        WHERE tt.transaction_id = ${transactions.id} AND tt.team_id = ${teamId}
+      ), '[]'::json)`.as("tags"),
     })
     .from(transactions)
     .leftJoin(
@@ -346,56 +643,7 @@ export async function getTransactions(
       bankConnections,
       eq(bankAccounts.bankConnectionId, bankConnections.id),
     )
-    .leftJoin(
-      transactionTags,
-      and(
-        eq(transactionTags.transactionId, transactions.id),
-        eq(transactionTags.teamId, teamId),
-      ),
-    )
-    .leftJoin(
-      tags,
-      and(eq(tags.id, transactionTags.tagId), eq(tags.teamId, teamId)),
-    )
-    .leftJoin(
-      transactionAttachments,
-      and(
-        eq(transactionAttachments.transactionId, transactions.id),
-        eq(transactionAttachments.teamId, teamId),
-      ),
-    )
-    .where(and(...finalWhereConditions))
-    .groupBy(
-      transactions.id,
-      transactions.date,
-      transactions.amount,
-      transactions.currency,
-      transactions.method,
-      transactions.status,
-      transactions.note,
-      transactions.manual,
-      transactions.internal,
-      transactions.recurring,
-      transactions.frequency,
-      transactions.name,
-      transactions.description,
-      transactions.createdAt,
-      users.id,
-      users.fullName,
-      users.email,
-      users.avatarUrl,
-      transactionCategories.id,
-      transactionCategories.name,
-      transactionCategories.color,
-      transactionCategories.slug,
-      transactionCategories.taxRate,
-      transactionCategories.taxType,
-      bankAccounts.id,
-      bankAccounts.name,
-      bankAccounts.currency,
-      bankConnections.id,
-      bankConnections.logoUrl,
-    );
+    .where(and(...finalWhereConditions));
 
   let query = queryBuilder.$dynamic();
 
@@ -459,16 +707,18 @@ export async function getTransactions(
   const processedData = fetchedData.map((row) => {
     const { account, connection, ...rest } = row;
 
-    const newAccount = {
-      ...account,
-      connection: connection?.id
-        ? {
-            id: connection.id,
-            name: connection.name,
-            logoUrl: connection.logoUrl,
-          }
-        : null,
-    };
+    const newAccount = account?.id
+      ? {
+          ...account,
+          connection: connection?.id
+            ? {
+                id: connection.id,
+                name: connection.name,
+                logoUrl: connection.logoUrl,
+              }
+            : null,
+        }
+      : null;
 
     const { taxAmount, taxRate, taxType } = resolveTaxValues({
       transactionAmount: rest.amount,
@@ -527,6 +777,8 @@ export async function getTransactionById(
       taxRate: transactions.taxRate,
       taxType: transactions.taxType,
       taxAmount: transactions.taxAmount,
+      baseAmount: transactions.baseAmount,
+      baseCurrency: transactions.baseCurrency,
       enrichmentCompleted: transactions.enrichmentCompleted,
       isFulfilled:
         sql<boolean>`(EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, params.teamId)})) OR ${transactions.status} = 'completed'`.as(
@@ -568,11 +820,12 @@ export async function getTransactionById(
         name: bankConnections.name,
         logoUrl: bankConnections.logoUrl,
       },
-      tags: sql<
-        Array<{ id: string; name: string | null }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${tags.id}, 'name', ${tags.name})) FILTER (WHERE ${tags.id} IS NOT NULL), '[]'::json)`.as(
-        "tags",
-      ),
+      tags: sql<Array<{ id: string; name: string | null }>>`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', t.id, 'name', t.name))
+        FROM ${transactionTags} tt
+        INNER JOIN ${tags} t ON t.id = tt.tag_id
+        WHERE tt.transaction_id = ${transactions.id} AND tt.team_id = ${params.teamId}
+      ), '[]'::json)`.as("tags"),
       attachments: sql<
         Array<{
           id: string;
@@ -581,9 +834,11 @@ export async function getTransactionById(
           type: string;
           size: number;
         }>
-      >`COALESCE(json_agg(DISTINCT jsonb_build_object('id', ${transactionAttachments.id}, 'filename', ${transactionAttachments.name}, 'path', ${transactionAttachments.path}, 'type', ${transactionAttachments.type}, 'size', ${transactionAttachments.size})) FILTER (WHERE ${transactionAttachments.id} IS NOT NULL), '[]'::json)`.as(
-        "attachments",
-      ),
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', ta.id, 'filename', ta.name, 'path', ta.path, 'type', ta.type, 'size', ta.size))
+        FROM ${transactionAttachments} ta
+        WHERE ta.transaction_id = ${transactions.id} AND ta.team_id = ${params.teamId}
+      ), '[]'::json)`.as("attachments"),
     })
     .from(transactions)
     .leftJoin(
@@ -612,28 +867,6 @@ export async function getTransactionById(
       eq(bankAccounts.bankConnectionId, bankConnections.id),
     )
     .leftJoin(
-      // For transactionTags aggregation
-      transactionTags,
-      and(
-        eq(transactionTags.transactionId, transactions.id),
-        eq(transactionTags.teamId, params.teamId),
-      ),
-    )
-    .leftJoin(
-      // For transactionTags aggregation
-      tags,
-      and(eq(tags.id, transactionTags.tagId), eq(tags.teamId, params.teamId)),
-    )
-    .leftJoin(
-      // For attachments aggregation
-      transactionAttachments,
-      and(
-        eq(transactionAttachments.transactionId, transactions.id),
-        eq(transactionAttachments.teamId, params.teamId),
-      ),
-    )
-    .leftJoin(
-      // Get any pending suggestion
       transactionMatchSuggestions,
       and(
         eq(transactionMatchSuggestions.transactionId, transactions.id),
@@ -641,48 +874,12 @@ export async function getTransactionById(
         eq(transactionMatchSuggestions.status, "pending"),
       ),
     )
-    .leftJoin(
-      // For inbox details in suggestions
-      inbox,
-      eq(inbox.id, transactionMatchSuggestions.inboxId),
-    )
+    .leftJoin(inbox, eq(inbox.id, transactionMatchSuggestions.inboxId))
     .where(
       and(
         eq(transactions.id, params.id),
         eq(transactions.teamId, params.teamId),
       ),
-    )
-    .groupBy(
-      transactions.id,
-      users.id,
-      transactionCategories.id,
-      transactionCategories.name,
-      transactionCategories.color,
-      transactionCategories.slug,
-      transactionCategories.taxRate,
-      transactionCategories.taxType,
-      bankAccounts.id,
-      bankConnections.id,
-      transactions.date,
-      transactions.amount,
-      transactions.currency,
-      transactions.method,
-      transactions.status,
-      transactions.note,
-      transactions.manual,
-      transactions.internal,
-      transactions.recurring,
-      transactions.frequency,
-      transactions.name,
-      transactions.description,
-      transactions.createdAt,
-      transactionMatchSuggestions.id,
-      transactionMatchSuggestions.inboxId,
-      transactionMatchSuggestions.confidenceScore,
-      inbox.displayName,
-      inbox.amount,
-      inbox.currency,
-      inbox.filePath,
     )
     .limit(1);
 
@@ -755,195 +952,92 @@ export async function deleteTransactions(
     });
 }
 
-export async function getTransactionsAmountFullRangeData(
+export async function deleteTransactionsByInternalIds(
   db: Database,
-  teamId: string,
+  params: { teamId: string; internalIds: string[] },
 ) {
-  return db.executeOnReplica(
-    sql`select * from get_transactions_amount_full_range_data(${teamId})`,
-  );
+  if (params.internalIds.length === 0) return [];
+
+  const fullIds = params.internalIds.map((id) => `${params.teamId}_${id}`);
+
+  return db
+    .delete(transactions)
+    .where(
+      and(
+        inArray(transactions.internalId, fullIds),
+        eq(transactions.teamId, params.teamId),
+      ),
+    )
+    .returning({ id: transactions.id });
 }
+
+const MIN_SIMILARITY_THRESHOLD = 0.6;
+const EXACT_MERCHANT_SCORE = 0.95;
+const MAX_CANDIDATES = 200;
 
 type GetSimilarTransactionsParams = {
   name: string;
   teamId: string;
   categorySlug?: string;
   frequency?: "weekly" | "monthly" | "annually" | "irregular";
-  transactionId?: string; // Optional: if we want to exclude the source transaction
-  limit?: number;
-  minSimilarityScore?: number; // Alternative to limit: quality-based filtering
+  transactionId?: string;
 };
 
 /**
- * Find similar transactions using hybrid search: combines embeddings AND FTS for comprehensive results
- *
- * @param db - Database connection
- * @param params - Search parameters including optional embedding settings
- * @returns Array of similar transactions, ordered by relevance (embedding matches first, then FTS matches)
+ * Find similar transactions using pg_trgm + multi-field name scoring.
+ * Designed for vendor matching: when a user changes a category or frequency,
+ * find all other transactions from the same vendor across all time.
  */
 export async function getSimilarTransactions(
   db: Database,
   params: GetSimilarTransactionsParams,
 ) {
-  const {
-    name,
-    teamId,
-    categorySlug,
-    frequency,
-    transactionId,
-    minSimilarityScore = 0.9,
-  } = params;
+  const { name, teamId, categorySlug, transactionId } = params;
 
-  logger.info({
-    msg: "Starting hybrid search for similar transactions",
-    name,
-    teamId,
-    minSimilarityScore,
-    transactionId,
-    categorySlug,
-    frequency,
-  });
-
-  let embeddingResults: any[] = [];
-  let ftsResults: any[] = [];
-  let embeddingSourceText: string | null = null;
-
-  // 1. EMBEDDING SEARCH (if transactionId provided)
+  // Resolve the source transaction's merchant_name when we have a transactionId
+  let sourceMerchantName: string | null = null;
   if (transactionId) {
-    logger.info("Attempting embedding search", {
-      transactionId,
-      teamId,
-    });
-
-    try {
-      const sourceEmbedding = await db
-        .select({
-          embedding: transactionEmbeddings.embedding,
-          sourceText: transactionEmbeddings.sourceText,
-        })
-        .from(transactionEmbeddings)
-        .where(
-          and(
-            eq(transactionEmbeddings.transactionId, transactionId),
-            eq(transactionEmbeddings.teamId, teamId),
-          ),
-        )
-        .limit(1);
-
-      if (sourceEmbedding.length > 0 && sourceEmbedding[0]!.embedding) {
-        const sourceEmbeddingVector = sourceEmbedding[0]!.embedding;
-        const sourceText = sourceEmbedding[0]!.sourceText;
-        embeddingSourceText = sourceText; // Store for FTS search
-
-        logger.info("✅ Found embedding for transaction", {
-          transactionId,
-          sourceText,
-          embeddingExists: true,
-        });
-
-        // Calculate similarity using cosineDistance function from Drizzle
-        const similarity = sql<number>`1 - (${cosineDistance(transactionEmbeddings.embedding, sourceEmbeddingVector)})`;
-
-        const embeddingConditions: (SQL | undefined)[] = [
+    const source = await db
+      .select({ merchantName: transactions.merchantName })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.id, transactionId),
           eq(transactions.teamId, teamId),
-          ne(transactions.id, transactionId), // Exclude the source transaction
-          gt(similarity, minSimilarityScore), // Use configurable similarity threshold
-        ];
+        ),
+      )
+      .limit(1);
 
-        if (categorySlug) {
-          embeddingConditions.push(
-            or(
-              isNull(transactions.categorySlug),
-              ne(transactions.categorySlug, categorySlug),
-            ),
-          );
-        }
-
-        // Note: We don't filter by frequency here because we want to find similar transactions
-        // regardless of their current frequency so we can update them to the new frequency
-
-        const finalEmbeddingConditions = embeddingConditions.filter(
-          (c) => c !== undefined,
-        ) as SQL[];
-
-        embeddingResults = await db
-          .select({
-            id: transactions.id,
-            amount: transactions.amount,
-            teamId: transactions.teamId,
-            name: transactions.name,
-            date: transactions.date,
-            categorySlug: transactions.categorySlug,
-            frequency: transactions.frequency,
-            similarity,
-            source: sql<string>`'embedding'`.as("source"),
-          })
-          .from(transactions)
-          .innerJoin(
-            transactionEmbeddings,
-            eq(transactionEmbeddings.transactionId, transactions.id),
-          )
-          .where(and(...finalEmbeddingConditions))
-          .orderBy(desc(similarity)); // No limit - let similarity threshold determine results
-
-        logger.info("Embedding search completed", {
-          resultsFound: embeddingResults.length,
-          minSimilarityScore,
-          transactionId,
-        });
-      } else {
-        logger.warn(
-          "❌ No embedding found for transaction - will rely on FTS only",
-          {
-            transactionId,
-            teamId,
-            transactionName: name,
-          },
-        );
-      }
-    } catch (error) {
-      logger.error("Embedding search failed", {
-        error: error instanceof Error ? error.message : String(error),
-        transactionId,
-        teamId,
-      });
-    }
+    sourceMerchantName = source[0]?.merchantName ?? null;
   }
 
-  // 2. FTS SEARCH (always run to complement embeddings)
-  logger.info("Running FTS search", {
-    name,
-    teamId,
-    hasEmbeddingResults: embeddingResults.length > 0,
-    hasSourceEmbedding: !!embeddingSourceText,
-  });
+  // Build OR conditions for candidate retrieval:
+  // Path A: exact merchant_name match (handles "AMZN MKTP US" ↔ "Amazon.com" via enrichment)
+  // Path B: trigram similarity on name/merchant fields
+  const candidateConditions: SQL[] = [
+    sql`(${name} %> ${transactions.name} OR ${name} %> ${transactions.merchantName})`,
+  ];
 
-  const ftsConditions: (SQL | undefined)[] = [eq(transactions.teamId, teamId)];
+  if (sourceMerchantName) {
+    candidateConditions.push(
+      sql`LOWER(${transactions.merchantName}) = LOWER(${sourceMerchantName})`,
+    );
+    candidateConditions.push(
+      sql`(${sourceMerchantName} %> ${transactions.name} OR ${sourceMerchantName} %> ${transactions.merchantName})`,
+    );
+  }
+
+  const whereConditions: (SQL | undefined)[] = [
+    eq(transactions.teamId, teamId),
+    or(...candidateConditions),
+  ];
 
   if (transactionId) {
-    ftsConditions.push(ne(transactions.id, transactionId));
+    whereConditions.push(ne(transactions.id, transactionId));
   }
-
-  // Always use the original transaction name for FTS search to ensure we find exact matches
-  // The embedding source text might be different from the actual transaction names
-  const searchTerm = name;
-  const searchQuery = buildSearchQuery(searchTerm);
-  ftsConditions.push(
-    sql`to_tsquery('english', ${searchQuery}) @@ ${transactions.ftsVector}`,
-  );
-
-  logger.info({
-    msg: "FTS search using term",
-    searchTerm,
-    searchQuery,
-    usingEmbeddingSourceText: false, // Always false now - we use original name
-    originalName: name,
-    embeddingSourceText: embeddingSourceText || "none",
-    reason: "Using original transaction name to find exact matches",
-  });
 
   if (categorySlug) {
-    ftsConditions.push(
+    whereConditions.push(
       or(
         isNull(transactions.categorySlug),
         ne(transactions.categorySlug, categorySlug),
@@ -951,95 +1045,74 @@ export async function getSimilarTransactions(
     );
   }
 
-  // Exclude transactions already found by embeddings
-  if (embeddingResults.length > 0) {
-    const embeddingIds = embeddingResults.map((r) => r.id);
-    ftsConditions.push(
-      sql`${transactions.id} NOT IN (${sql.join(
-        embeddingIds.map((id) => sql`${id}`),
-        sql`, `,
-      )})`,
-    );
-  }
-
-  const finalFtsConditions = ftsConditions.filter(
-    (c) => c !== undefined,
-  ) as SQL[];
-
-  logger.info({
-    msg: "FTS search conditions",
-    searchTerm,
-    searchQuery,
-    conditionsCount: finalFtsConditions.length,
-    teamId,
-    transactionId,
-    categorySlug,
-    frequency,
+  const candidates = await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`);
+    return tx
+      .select({
+        id: transactions.id,
+        amount: transactions.amount,
+        teamId: transactions.teamId,
+        name: transactions.name,
+        date: transactions.date,
+        categorySlug: transactions.categorySlug,
+        frequency: transactions.frequency,
+        merchantName: transactions.merchantName,
+      })
+      .from(transactions)
+      .where(and(...(whereConditions.filter(Boolean) as SQL[])))
+      .orderBy(
+        sql`GREATEST(
+          word_similarity(${name}, ${transactions.merchantName}),
+          word_similarity(${name}, ${transactions.name})
+        ) DESC`,
+      )
+      .limit(MAX_CANDIDATES);
   });
 
-  ftsResults = await db
-    .select({
-      id: transactions.id,
-      amount: transactions.amount,
-      teamId: transactions.teamId,
-      name: transactions.name,
-      date: transactions.date,
-      categorySlug: transactions.categorySlug,
-      frequency: transactions.frequency,
-      source: sql<string>`'fts'`.as("source"),
+  // Score each candidate using a cross-field comparison matrix
+  const scored = candidates
+    .map((candidate) => {
+      // Exact merchant_name match is the strongest signal
+      if (
+        sourceMerchantName &&
+        candidate.merchantName &&
+        sourceMerchantName.toLowerCase() ===
+          candidate.merchantName.toLowerCase()
+      ) {
+        return { ...candidate, score: EXACT_MERCHANT_SCORE };
+      }
+
+      // Cross-field comparison matrix: try source name and source merchant
+      // against candidate name and candidate merchant. calculateNameScore
+      // already compares the first arg against both the second and third args.
+      const scores: number[] = [
+        calculateNameScore(name, candidate.name, candidate.merchantName),
+      ];
+
+      if (sourceMerchantName) {
+        scores.push(
+          calculateNameScore(
+            sourceMerchantName,
+            candidate.name,
+            candidate.merchantName,
+          ),
+        );
+      }
+
+      return { ...candidate, score: Math.max(...scores) };
     })
-    .from(transactions)
-    .where(and(...finalFtsConditions)); // No limit - get all FTS matches
+    .filter((r) => r.score >= MIN_SIMILARITY_THRESHOLD)
+    .sort((a, b) => b.score - a.score);
 
-  logger.info({
-    msg: "FTS search completed",
-    resultsFound: ftsResults.length,
-    searchTerm,
-    searchQuery,
-    teamId,
-    sampleResults: ftsResults.slice(0, 3).map((r) => ({
-      name: r.name,
-      id: r.id,
-    })),
-  });
-
-  // 3. COMBINE AND DEDUPLICATE RESULTS
-  const allResults = [
-    ...embeddingResults.map(({ similarity, source, ...rest }) => ({
-      ...rest,
-      matchType: source,
-    })),
-    ...ftsResults.map(({ source, ...rest }) => ({
-      ...rest,
-      matchType: source,
-    })),
-  ];
-
-  // Remove duplicates based on transaction ID (most accurate)
-  // If same ID appears in both embedding and FTS results, prioritize embedding
-  const uniqueResults = allResults.filter((transaction, index, array) => {
-    return index === array.findIndex((t) => t.id === transaction.id);
-  });
-
-  // Log final results with structured data
-  logger.info("Hybrid search completed", {
-    totalResults: allResults.length,
-    uniqueResults: uniqueResults.length,
-    embeddingMatches: embeddingResults.length,
-    ftsMatches: ftsResults.length,
+  logger.info("getSimilarTransactions completed", {
     name,
     teamId,
-    minSimilarityScore,
-    results: uniqueResults.map((t, i) => ({
-      rank: i + 1,
-      name: t.name,
-      matchType: t.matchType,
-      id: t.id,
-    })),
+    sourceMerchantName,
+    candidatesRetrieved: candidates.length,
+    resultsAfterScoring: scored.length,
   });
 
-  // Remove matchType field and return all quality matches
-  return uniqueResults.map(({ matchType, ...rest }) => rest);
+  return scored.map(({ merchantName: _m, score: _s, ...rest }) => rest);
 }
 
 type SearchTransactionMatchParams = {
@@ -1080,27 +1153,191 @@ export async function searchTransactionMatch(
   } = params;
 
   if (query) {
-    const results = await db.executeOnReplica(
-      sql`SELECT * FROM search_transactions_direct(
-        ${teamId},
-        ${query},
-        ${maxResults}
-      )`,
-    );
+    const searchTerm = query.trim();
+    if (!searchTerm) return [];
 
-    // Cast results to match the new type structure and filter if needed
-    const processedResults = results.map((result: any) => ({
-      ...result,
-      is_already_matched: false,
-      matched_attachment_filename: undefined,
-    }));
+    // Fetch inbox context for scoring when available
+    let inboxContext: {
+      displayName: string | null;
+      amount: number | null;
+      currency: string | null;
+      date: string | null;
+      baseAmount: number | null;
+      baseCurrency: string | null;
+    } | null = null;
 
-    return processedResults;
+    if (inboxId) {
+      const [item] = await db
+        .select({
+          displayName: inbox.displayName,
+          amount: inbox.amount,
+          currency: inbox.currency,
+          date: inbox.date,
+          baseAmount: inbox.baseAmount,
+          baseCurrency: inbox.baseCurrency,
+        })
+        .from(inbox)
+        .where(and(eq(inbox.id, inboxId), eq(inbox.teamId, teamId)))
+        .limit(1);
+      inboxContext = item ?? null;
+    }
+
+    const numericValue = Number.parseFloat(searchTerm.replace(/[^\d.-]/g, ""));
+    const isNumeric =
+      !Number.isNaN(numericValue) && Number.isFinite(numericValue);
+
+    const searchQuery = buildSearchQuery(searchTerm);
+
+    const whereConditions: SQL[] = [
+      eq(transactions.teamId, teamId),
+      eq(transactions.status, "posted"),
+    ];
+
+    if (!includeAlreadyMatched) {
+      whereConditions.push(
+        sql`NOT EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)})`,
+      );
+    }
+
+    if (isNumeric) {
+      const tolerance = Math.max(1, Math.abs(numericValue) * 0.1);
+      whereConditions.push(
+        or(
+          sql`ABS(ABS(${transactions.amount}) - ${numericValue}) <= ${tolerance}`,
+          sql`ABS(ABS(COALESCE(${transactions.baseAmount}, 0)) - ${numericValue}) <= ${tolerance}`,
+          sql`to_tsquery('english', ${searchQuery}) @@ ${transactions.ftsVector}`,
+          sql`${transactions.name} ILIKE '%' || ${searchTerm} || '%'`,
+          sql`${transactions.merchantName} ILIKE '%' || ${searchTerm} || '%'`,
+        )!,
+      );
+    } else {
+      whereConditions.push(
+        or(
+          sql`to_tsquery('english', ${searchQuery}) @@ ${transactions.ftsVector}`,
+          sql`${transactions.name} ILIKE '%' || ${searchTerm} || '%'`,
+          sql`${transactions.merchantName} ILIKE '%' || ${searchTerm} || '%'`,
+          sql`${transactions.description} ILIKE '%' || ${searchTerm} || '%'`,
+        )!,
+      );
+    }
+
+    // Fetch more candidates than needed so we can score and re-rank
+    const fetchLimit = inboxContext ? Math.max(maxResults * 3, 30) : maxResults;
+
+    const candidates = await db
+      .select({
+        transactionId: transactions.id,
+        name: transactions.name,
+        transactionAmount: transactions.amount,
+        transactionCurrency: transactions.currency,
+        transactionDate: transactions.date,
+        merchantName: transactions.merchantName,
+        baseAmount: transactions.baseAmount,
+        baseCurrency: transactions.baseCurrency,
+        isAlreadyMatched: sql<boolean>`
+            EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)})
+          `.as("is_already_matched"),
+        attachmentFilename: sql<string | null>`
+            (SELECT ${transactionAttachments.name} FROM ${transactionAttachments}
+             WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}
+             LIMIT 1)
+          `.as("attachment_filename"),
+      })
+      .from(transactions)
+      .where(and(...whereConditions))
+      .orderBy(desc(transactions.date))
+      .limit(fetchLimit);
+
+    if (!inboxContext) {
+      return candidates.slice(0, maxResults).map((r) => ({
+        transaction_id: r.transactionId,
+        name: r.name,
+        transaction_amount: r.transactionAmount,
+        transaction_currency: r.transactionCurrency,
+        transaction_date: r.transactionDate,
+        name_score: 0,
+        amount_score: 0,
+        currency_score: 0,
+        date_score: 0,
+        confidence_score: 0,
+        is_already_matched: r.isAlreadyMatched,
+        matched_attachment_filename: r.attachmentFilename ?? undefined,
+      }));
+    }
+
+    return candidates
+      .map((t) => {
+        const nameScore = calculateNameScore(
+          inboxContext.displayName,
+          t.name,
+          t.merchantName,
+        );
+        const amountScore = calculateAmountScore(
+          {
+            amount: inboxContext.amount,
+            currency: inboxContext.currency,
+            baseAmount: inboxContext.baseAmount,
+            baseCurrency: inboxContext.baseCurrency,
+          },
+          {
+            amount: t.transactionAmount,
+            currency: t.transactionCurrency,
+            baseAmount: t.baseAmount,
+            baseCurrency: t.baseCurrency,
+          },
+        );
+        const currencyScore = calculateCurrencyScore(
+          inboxContext.currency || undefined,
+          t.transactionCurrency || undefined,
+          inboxContext.baseCurrency || undefined,
+          t.baseCurrency || undefined,
+        );
+        const dateScore = inboxContext.date
+          ? calculateDateScore(inboxContext.date, t.transactionDate)
+          : 0;
+        const isExactAmount =
+          inboxContext.amount !== null &&
+          Math.abs(
+            Math.abs(inboxContext.amount || 0) -
+              Math.abs(t.transactionAmount || 0),
+          ) < 0.01;
+        const isSameCurrency = inboxContext.currency === t.transactionCurrency;
+        const confidence = scoreMatch({
+          nameScore,
+          amountScore,
+          dateScore,
+          currencyScore,
+          isSameCurrency,
+          isExactAmount,
+        });
+
+        return {
+          transaction_id: t.transactionId,
+          name: t.name,
+          transaction_amount: t.transactionAmount,
+          transaction_currency: t.transactionCurrency,
+          transaction_date: t.transactionDate,
+          name_score: Math.round(nameScore * 1000) / 1000,
+          amount_score: Math.round(amountScore * 1000) / 1000,
+          currency_score: Math.round(currencyScore * 1000) / 1000,
+          date_score: Math.round(dateScore * 1000) / 1000,
+          confidence_score: Math.round(confidence * 1000) / 1000,
+          is_already_matched: t.isAlreadyMatched,
+          matched_attachment_filename: t.attachmentFilename ?? undefined,
+        };
+      })
+      .sort((a, b) => {
+        if (a.confidence_score !== b.confidence_score)
+          return b.confidence_score - a.confidence_score;
+        if (a.is_already_matched !== b.is_already_matched)
+          return a.is_already_matched ? 1 : -1;
+        return 0;
+      })
+      .slice(0, maxResults);
   }
 
   if (inboxId) {
     try {
-      // Implement the matching logic using Drizzle instead of stored procedure
       const inboxItem = await db
         .select({
           id: inbox.id,
@@ -1119,107 +1356,115 @@ export async function searchTransactionMatch(
         return [];
       }
 
-      const item = inboxItem[0]!; // Safe to use non-null assertion since we checked length above
+      const item = inboxItem[0]!;
+      const inboxAmount = Math.abs(item.amount || 0);
+      const inboxBaseAmount = Math.abs(item.baseAmount || 0);
 
-      // Find candidate transactions including those with attachments
-      const candidateTransactions = await db
-        .select({
-          transactionId: transactions.id,
-          name: transactions.name,
-          transactionAmount: transactions.amount,
-          transactionCurrency: transactions.currency,
-          transactionDate: transactions.date,
-          baseAmount: transactions.baseAmount,
-          baseCurrency: transactions.baseCurrency,
-          // Check if transaction is already matched (has attachments or completed status)
-          isAlreadyMatched: sql<boolean>`
-            (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')
-          `.as("is_already_matched"),
-          // Get the first attachment filename if it exists
-          attachmentFilename: sql<string | null>`
-            (SELECT ${transactionAttachments.name} FROM ${transactionAttachments} 
-             WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)} 
-             LIMIT 1)
-          `.as("attachment_filename"),
-          // Use pg_trgm similarity for accurate name matching
-          nameScore:
-            sql<number>`similarity(${transactions.name}, ${item.displayName ?? ""})`.as(
-              "name_score",
-            ),
-          // More flexible amount matching with currency conversion support
-          amountScore: sql<number>`
-            GREATEST(
-              -- Direct currency match
-              (CASE WHEN ${transactions.currency} = ${item.currency ?? ""} THEN
-                (1 - LEAST(ABS(ABS(${transactions.amount}) - ${item.amount ?? 0}::DOUBLE PRECISION) / GREATEST(${item.amount ?? 1}::DOUBLE PRECISION, 1), 1))::DOUBLE PRECISION
-               ELSE 0 END),
-              -- Base currency match (if both have base currency data)
-              (CASE WHEN ${transactions.baseCurrency} IS NOT NULL AND ${item.baseCurrency ?? ""} != '' AND ${transactions.baseCurrency} = ${item.baseCurrency ?? ""} THEN
-                (1 - LEAST(ABS(ABS(${transactions.baseAmount}) - ${item.baseAmount ?? 0}::DOUBLE PRECISION) / GREATEST(${item.baseAmount ?? 1}::DOUBLE PRECISION, 1), 1))::DOUBLE PRECISION
-               ELSE 0 END),
-              -- Cross-currency fallback for common ratios
-              (CASE WHEN ${transactions.currency} != ${item.currency ?? ""} THEN
-                LEAST(
-                  (1 - LEAST(ABS(ABS(${transactions.amount}) / 10.0 - ${item.amount ?? 0}::DOUBLE PRECISION) / GREATEST(${item.amount ?? 1}::DOUBLE PRECISION, 1), 1))::DOUBLE PRECISION * 0.4,
-                  0.6
-                )
-               ELSE 0 END)
-            )
-          `.as("amount_score"),
-          // Currency matching score - give partial credit for different currencies
-          currencyScore: sql<number>`
-            (CASE
-              WHEN ${transactions.currency} = ${item.currency ?? ""} THEN 1.0
-              WHEN ${transactions.baseCurrency} IS NOT NULL AND ${item.baseCurrency ?? ""} != '' AND ${transactions.baseCurrency} = ${item.baseCurrency ?? ""} THEN 0.8
-              ELSE 0.3
-            END)::DOUBLE PRECISION
-          `.as("currency_score"),
-          // Date proximity score (within 30 days gets full score, linear decay after)
-          dateScore: sql<number>`
-            (1 - LEAST(ABS(${transactions.date}::date - ${item.date}::date) / 30.0, 1))::DOUBLE PRECISION
-          `.as("date_score"),
-        })
-        .from(transactions)
-        .where(
-          and(
-            eq(transactions.teamId, teamId),
-            eq(transactions.status, "posted"),
-            // Date range filter: within 90 days of inbox date
-            sql`${transactions.date} BETWEEN ${item.date}::date - INTERVAL '90 days' AND ${item.date}::date + INTERVAL '90 days'`,
-            // Conditionally exclude already matched transactions
-            ...(includeAlreadyMatched
-              ? []
-              : [
-                  sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
-                ]),
-            // More lenient amount filtering: allow a wider range for cross-currency matching
-            or(
-              // Direct currency match with 20% tolerance
-              and(
-                eq(transactions.currency, item.currency ?? ""),
-                sql`ABS(${transactions.amount}) BETWEEN ${(item.amount ?? 0) * 0.8}::DOUBLE PRECISION AND ${(item.amount ?? 0) * 1.2}::DOUBLE PRECISION`,
-              ),
-              // Base currency match with 20% tolerance (only if both have base currency)
-              and(
-                sql`${transactions.baseCurrency} IS NOT NULL`,
-                sql`${item.baseCurrency ?? ""} != ''`,
-                eq(transactions.baseCurrency, item.baseCurrency ?? ""),
-                sql`ABS(${transactions.baseAmount}) BETWEEN ${(item.baseAmount ?? 0) * 0.8}::DOUBLE PRECISION AND ${(item.baseAmount ?? 0) * 1.2}::DOUBLE PRECISION`,
-              ),
-              // Cross-currency: allow 10:1 ratio for common conversions like SEK:USD
-              sql`ABS(${transactions.amount}) BETWEEN ${(item.amount ?? 0) * 8}::DOUBLE PRECISION AND ${(item.amount ?? 0) * 12}::DOUBLE PRECISION`,
-            ),
-          ),
+      const candidateTransactions = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SET LOCAL pg_trgm.word_similarity_threshold = 0.3`,
         );
+        return tx
+          .select({
+            transactionId: transactions.id,
+            name: transactions.name,
+            transactionAmount: transactions.amount,
+            transactionCurrency: transactions.currency,
+            transactionDate: transactions.date,
+            baseAmount: transactions.baseAmount,
+            baseCurrency: transactions.baseCurrency,
+            isAlreadyMatched: sql<boolean>`
+              (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')
+            `.as("is_already_matched"),
+            attachmentFilename: sql<string | null>`
+              (SELECT ${transactionAttachments.name} FROM ${transactionAttachments} 
+               WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)} 
+               LIMIT 1)
+            `.as("attachment_filename"),
+            merchantName: transactions.merchantName,
+          })
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.teamId, teamId),
+              eq(transactions.status, "posted"),
+              sql`${transactions.date} IS NOT NULL`,
+              sql`${transactions.date} BETWEEN ${item.date}::date - INTERVAL '90 days' AND ${item.date}::date + INTERVAL '30 days'`,
+              ...(includeAlreadyMatched
+                ? []
+                : [
+                    sql`NOT (EXISTS (SELECT 1 FROM ${transactionAttachments} WHERE ${eq(transactionAttachments.transactionId, transactions.id)} AND ${eq(transactionAttachments.teamId, teamId)}) OR ${transactions.status} = 'completed')`,
+                  ]),
+              or(
+                and(
+                  eq(transactions.currency, item.currency ?? ""),
+                  sql`ABS(ABS(${transactions.amount}) - ${inboxAmount}) < GREATEST(1, ${inboxAmount} * 0.25)`,
+                ),
+                sql`(${item.displayName ?? ""} %> ${transactions.name} OR ${item.displayName ?? ""} %> ${transactions.merchantName})`,
+                and(
+                  sql`${transactions.baseCurrency} IS NOT NULL`,
+                  sql`${item.baseCurrency ?? ""} != ''`,
+                  eq(transactions.baseCurrency, item.baseCurrency ?? ""),
+                  sql`ABS(ABS(COALESCE(${transactions.baseAmount}, 0)) - ${inboxBaseAmount}) < GREATEST(50, ${inboxBaseAmount} * 0.15)`,
+                ),
+              ),
+            ),
+          )
+          .orderBy(
+            sql`GREATEST(word_similarity(${item.displayName ?? ""}, ${transactions.name}), word_similarity(${item.displayName ?? ""}, ${transactions.merchantName})) DESC`,
+            sql`ABS(ABS(${transactions.amount}) - ${inboxAmount}) / GREATEST(1.0, ${inboxAmount})`,
+            sql`ABS(${transactions.date} - ${item.date}::date)`,
+          )
+          .limit(Math.max(maxResults * 3, 30));
+      });
 
-      // Calculate confidence scores and filter results
       const scoredResults = candidateTransactions
         .map((transaction) => {
-          const confidenceScore =
-            transaction.nameScore * 0.4 + // Name similarity weight: 40% (slightly reduced)
-            transaction.amountScore * 0.4 + // Amount match weight: 40% (increased importance)
-            transaction.currencyScore * 0.1 + // Currency match weight: 10%
-            transaction.dateScore * 0.1; // Date proximity weight: 10%
+          const nameScore = calculateNameScore(
+            item.displayName,
+            transaction.name,
+            transaction.merchantName,
+          );
+          const amountScore = calculateAmountScore(
+            {
+              amount: item.amount,
+              currency: item.currency,
+              baseAmount: item.baseAmount,
+              baseCurrency: item.baseCurrency,
+            },
+            {
+              amount: transaction.transactionAmount,
+              currency: transaction.transactionCurrency,
+              baseAmount: transaction.baseAmount,
+              baseCurrency: transaction.baseCurrency,
+            },
+          );
+          const currencyScore = calculateCurrencyScore(
+            item.currency || undefined,
+            transaction.transactionCurrency || undefined,
+            item.baseCurrency || undefined,
+            transaction.baseCurrency || undefined,
+          );
+          const dateScore = calculateDateScore(
+            item.date!,
+            transaction.transactionDate,
+          );
+          const isExactAmount =
+            item.amount !== null &&
+            Math.abs(
+              Math.abs(item.amount || 0) -
+                Math.abs(transaction.transactionAmount || 0),
+            ) < 0.01;
+          const isSameCurrency =
+            item.currency === transaction.transactionCurrency;
+          const confidence = scoreMatch({
+            nameScore,
+            amountScore,
+            dateScore,
+            currencyScore,
+            isSameCurrency,
+            isExactAmount,
+          });
 
           const result = {
             transaction_id: transaction.transactionId,
@@ -1227,11 +1472,11 @@ export async function searchTransactionMatch(
             transaction_amount: transaction.transactionAmount,
             transaction_currency: transaction.transactionCurrency,
             transaction_date: transaction.transactionDate,
-            name_score: Math.round(transaction.nameScore * 10) / 10,
-            amount_score: Math.round(transaction.amountScore * 10) / 10,
-            currency_score: Math.round(transaction.currencyScore * 10) / 10,
-            date_score: Math.round(transaction.dateScore * 10) / 10,
-            confidence_score: Math.round(confidenceScore * 10) / 10,
+            name_score: Math.round(nameScore * 1000) / 1000,
+            amount_score: Math.round(amountScore * 1000) / 1000,
+            currency_score: Math.round(currencyScore * 1000) / 1000,
+            date_score: Math.round(dateScore * 1000) / 1000,
+            confidence_score: Math.round(confidence * 1000) / 1000,
             is_already_matched: transaction.isAlreadyMatched,
             matched_attachment_filename:
               transaction.attachmentFilename ?? undefined,
@@ -1241,12 +1486,10 @@ export async function searchTransactionMatch(
         })
         .filter((result) => result.confidence_score >= minConfidenceScore)
         .sort((a, b) => {
-          // Sort by confidence score first (highest first), then by match status (unmatched first)
           if (a.confidence_score !== b.confidence_score) {
             return b.confidence_score - a.confidence_score;
           }
 
-          // If confidence scores are equal, prioritize unmatched transactions
           if (a.is_already_matched !== b.is_already_matched) {
             return a.is_already_matched ? 1 : -1;
           }
@@ -1274,7 +1517,14 @@ type UpdateTransactionData = {
   date?: string;
   bankAccountId?: string;
   categorySlug?: string | null;
-  status?: "pending" | "archived" | "completed" | "posted" | "excluded" | null;
+  status?:
+    | "pending"
+    | "archived"
+    | "completed"
+    | "posted"
+    | "excluded"
+    | "exported"
+    | null;
   internal?: boolean;
   note?: string | null;
   assignedId?: string | null;
@@ -1310,6 +1560,19 @@ export async function updateTransaction(
     return null;
   }
 
+  // If status is being changed from "exported" to something else, delete accounting sync records
+  // This ensures transactions are properly unmarked as exported
+  if (dataToUpdate.status !== undefined && dataToUpdate.status !== "exported") {
+    await db
+      .delete(accountingSyncRecords)
+      .where(
+        and(
+          eq(accountingSyncRecords.transactionId, id),
+          eq(accountingSyncRecords.teamId, teamId),
+        ),
+      );
+  }
+
   if (dataToUpdate.categorySlug) {
     createActivity(db, {
       teamId,
@@ -1343,12 +1606,110 @@ export async function updateTransaction(
   return getFullTransactionData(db, result.id, teamId);
 }
 
+export type GetTransactionsByIdsParams = {
+  ids: string[];
+  teamId: string;
+};
+
+export async function getTransactionsByIds(
+  db: Database,
+  params: GetTransactionsByIdsParams,
+) {
+  const { ids, teamId } = params;
+
+  if (ids.length === 0) {
+    return [];
+  }
+
+  // Return snake_case structure to match Supabase REST API response format
+  const results = await db
+    .select({
+      id: transactions.id,
+      date: transactions.date,
+      name: transactions.name,
+      description: transactions.description,
+      amount: transactions.amount,
+      note: transactions.note,
+      balance: transactions.balance,
+      currency: transactions.currency,
+      counterparty_name: transactions.counterpartyName,
+      tax_type: transactions.taxType,
+      tax_rate: transactions.taxRate,
+      tax_amount: transactions.taxAmount,
+      base_amount: transactions.baseAmount,
+      base_currency: transactions.baseCurrency,
+      status: transactions.status,
+      attachments: sql<
+        Array<{
+          id: string;
+          name: string | null;
+          path: string[] | null;
+          type: string | null;
+          size: number | null;
+        }>
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', ta.id, 'name', ta.name, 'path', ta.path, 'type', ta.type, 'size', ta.size))
+        FROM ${transactionAttachments} ta
+        WHERE ta.transaction_id = ${transactions.id} AND ta.team_id = ${teamId}
+      ), '[]'::json)`.as("attachments"),
+      category: sql<{
+        id: string;
+        name: string | null;
+        description: string | null;
+        tax_rate: number | null;
+        tax_type: string | null;
+        tax_reporting_code: string | null;
+      } | null>`json_build_object('id', ${transactionCategories.id}, 'name', ${transactionCategories.name}, 'description', ${transactionCategories.description}, 'tax_rate', ${transactionCategories.taxRate}, 'tax_type', ${transactionCategories.taxType}, 'tax_reporting_code', ${transactionCategories.taxReportingCode})`.as(
+        "category",
+      ),
+      bank_account: sql<{
+        id: string;
+        name: string | null;
+      } | null>`json_build_object('id', ${bankAccounts.id}, 'name', ${bankAccounts.name})`.as(
+        "bank_account",
+      ),
+      tags: sql<
+        Array<{ id: string; tag: { id: string; name: string | null } }>
+      >`COALESCE((
+        SELECT json_agg(jsonb_build_object('id', tt.id, 'tag', jsonb_build_object('id', t.id, 'name', t.name)))
+        FROM ${transactionTags} tt
+        INNER JOIN ${tags} t ON t.id = tt.tag_id
+        WHERE tt.transaction_id = ${transactions.id} AND tt.team_id = ${teamId}
+      ), '[]'::json)`.as("tags"),
+    })
+    .from(transactions)
+    .leftJoin(
+      transactionCategories,
+      and(
+        eq(transactions.categorySlug, transactionCategories.slug),
+        eq(transactionCategories.teamId, teamId),
+      ),
+    )
+    .leftJoin(
+      bankAccounts,
+      and(
+        eq(transactions.bankAccountId, bankAccounts.id),
+        eq(bankAccounts.teamId, teamId),
+      ),
+    )
+    .where(and(inArray(transactions.id, ids), eq(transactions.teamId, teamId)));
+
+  return results;
+}
+
 type UpdateTransactionsData = {
   ids: string[];
   teamId: string;
   userId?: string;
   categorySlug?: string | null;
-  status?: "pending" | "archived" | "completed" | "posted" | "excluded" | null;
+  status?:
+    | "pending"
+    | "archived"
+    | "completed"
+    | "posted"
+    | "excluded"
+    | "exported"
+    | null;
   internal?: boolean;
   note?: string | null;
   assignedId?: string | null;
@@ -1402,6 +1763,19 @@ export async function updateTransactions(
   } else {
     // If no fields to update, just return the transaction IDs
     results = ids.map((id) => ({ id }));
+  }
+
+  // If status is being changed from "exported" to something else, delete accounting sync records
+  // This ensures transactions are properly unmarked as exported
+  if (input.status !== undefined && input.status !== "exported") {
+    await db
+      .delete(accountingSyncRecords)
+      .where(
+        and(
+          eq(accountingSyncRecords.teamId, teamId),
+          inArray(accountingSyncRecords.transactionId, ids),
+        ),
+      );
   }
 
   // Create activities for transaction updates
@@ -1545,4 +1919,289 @@ export async function createTransactions(
 
   // Filter out any null results
   return fullTransactions.filter((transaction) => transaction !== null);
+}
+
+export type UpsertTransactionData = {
+  name: string;
+  date: string;
+  method: "other" | "card_purchase" | "transfer";
+  amount: number;
+  currency: string;
+  teamId: string;
+  bankAccountId: string | null;
+  internalId: string;
+  status: "pending" | "completed" | "archived" | "posted" | "excluded";
+  manual: boolean;
+  categorySlug?: string | null;
+  description?: string | null;
+  balance?: number | null;
+  note?: string | null;
+  counterpartyName?: string | null;
+  merchantName?: string | null;
+  assignedId?: string | null;
+  internal?: boolean;
+  notified?: boolean;
+  baseAmount?: number | null;
+  baseCurrency?: string | null;
+  taxAmount?: number | null;
+  taxRate?: number | null;
+  taxType?: string | null;
+  recurring?: boolean;
+  frequency?:
+    | "weekly"
+    | "biweekly"
+    | "monthly"
+    | "semi_monthly"
+    | "annually"
+    | "irregular"
+    | "unknown"
+    | null;
+  enrichmentCompleted?: boolean;
+};
+
+export type UpsertTransactionsParams = {
+  transactions: UpsertTransactionData[];
+  teamId: string;
+};
+
+/**
+ * Bulk upsert transactions with conflict handling on internalId
+ * Used by import-transactions processor. Skips duplicates (onConflictDoNothing).
+ */
+export async function upsertTransactions(
+  db: Database,
+  params: UpsertTransactionsParams,
+): Promise<Array<{ id: string }>> {
+  // Exclude teamId from the params
+  const { transactions: transactionsData, teamId: _teamId } = params;
+  if (transactionsData.length === 0) {
+    return [];
+  }
+
+  const upserted = await db
+    .insert(transactions)
+    .values(transactionsData)
+    .onConflictDoNothing({
+      target: [transactions.internalId],
+    })
+    .returning({
+      id: transactions.id,
+    });
+
+  return upserted;
+}
+
+export type GetTransactionsByAccountIdParams = {
+  accountId: string;
+  teamId: string;
+};
+
+/**
+ * Get all transactions for a specific account
+ * Used by update-account-base-currency processor
+ */
+export async function getTransactionsByAccountId(
+  db: Database,
+  params: GetTransactionsByAccountIdParams,
+) {
+  const { accountId, teamId } = params;
+
+  return db
+    .select()
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.bankAccountId, accountId),
+        eq(transactions.teamId, teamId),
+      ),
+    );
+}
+
+export type GetTransactionCountByBankAccountIdParams = {
+  bankAccountId: string;
+  teamId: string;
+};
+
+/**
+ * Get transaction count for a bank account
+ * Used by delete bank account dialog to show impact
+ */
+export async function getTransactionCountByBankAccountId(
+  db: Database,
+  params: GetTransactionCountByBankAccountIdParams,
+): Promise<number> {
+  const { bankAccountId, teamId } = params;
+
+  const [result] = await db
+    .select({
+      count: sql<number>`COUNT(*)::int`.as("count"),
+    })
+    .from(transactions)
+    .where(
+      and(
+        eq(transactions.bankAccountId, bankAccountId),
+        eq(transactions.teamId, teamId),
+      ),
+    );
+
+  return result?.count ?? 0;
+}
+
+export type BulkUpdateTransactionsBaseCurrencyParams = {
+  transactions: Array<{
+    id: string;
+    baseAmount: number;
+    baseCurrency: string;
+  }>;
+  teamId: string;
+};
+
+/**
+ * Bulk update transactions with base currency/amount
+ * Uses per-row updates in a transaction — avoids array serialization issues
+ * with postgres.js + Drizzle (unnest expands arrays into many params).
+ */
+export async function bulkUpdateTransactionsBaseCurrency(
+  db: Database,
+  params: BulkUpdateTransactionsBaseCurrencyParams,
+) {
+  const { transactions: transactionsData, teamId } = params;
+
+  if (!teamId?.trim()) {
+    throw new Error("bulkUpdateTransactionsBaseCurrency: teamId is required");
+  }
+
+  if (transactionsData.length === 0) return;
+
+  const BATCH_SIZE = 100;
+  const CONCURRENCY = 10;
+
+  for (let i = 0; i < transactionsData.length; i += BATCH_SIZE) {
+    const batch = transactionsData.slice(i, i + BATCH_SIZE);
+    await db.transaction(async (tx) => {
+      for (let j = 0; j < batch.length; j += CONCURRENCY) {
+        const chunk = batch.slice(j, j + CONCURRENCY);
+        await Promise.all(
+          chunk.map((item) =>
+            tx
+              .update(transactions)
+              .set({
+                baseAmount: item.baseAmount,
+                baseCurrency: item.baseCurrency,
+              })
+              .where(
+                and(
+                  eq(transactions.id, item.id),
+                  eq(transactions.teamId, teamId),
+                ),
+              ),
+          ),
+        );
+      }
+    });
+  }
+}
+
+/**
+ * Count transactions that are ready for export to accounting software
+ *
+ * Ready for export means:
+ * - Fulfilled (has attachments OR status = 'completed')
+ * - Not excluded or archived
+ * - Not already synced to any accounting provider with status 'synced'
+ */
+export async function getTransactionsReadyForExportCount(
+  db: Database,
+  teamId: string,
+): Promise<number> {
+  const result = await db
+    .select({
+      count: sql<number>`COUNT(DISTINCT ${transactions.id})`.as("count"),
+    })
+    .from(transactions)
+    .leftJoin(
+      transactionAttachments,
+      and(
+        eq(transactionAttachments.transactionId, transactions.id),
+        eq(transactionAttachments.teamId, teamId),
+      ),
+    )
+    .leftJoin(
+      accountingSyncRecords,
+      and(
+        eq(accountingSyncRecords.transactionId, transactions.id),
+        eq(accountingSyncRecords.teamId, teamId),
+        eq(accountingSyncRecords.status, "synced"),
+      ),
+    )
+    .where(
+      and(
+        eq(transactions.teamId, teamId),
+        // Not exported, excluded, or archived
+        sql`${transactions.status} NOT IN ('exported', 'excluded', 'archived')`,
+        // Not already synced
+        isNull(accountingSyncRecords.id),
+      ),
+    )
+    .groupBy(transactions.id)
+    // Fulfilled: has attachments OR status = 'completed'
+    .having(
+      sql`(COUNT(${transactionAttachments.id}) > 0 OR ${transactions.status} = 'completed')`,
+    );
+
+  // The query returns one row per fulfilled transaction, so we count the rows
+  return result.length;
+}
+
+/**
+ * Mark transactions as exported (for file exports)
+ * This removes them from the review tab
+ */
+export async function markTransactionsAsExported(
+  db: Database,
+  transactionIds: string[],
+  teamId: string,
+): Promise<void> {
+  if (transactionIds.length === 0) return;
+
+  await db
+    .update(transactions)
+    .set({ status: "exported" })
+    .where(
+      and(
+        inArray(transactions.id, transactionIds),
+        eq(transactions.teamId, teamId),
+      ),
+    );
+}
+
+/**
+ * Move a transaction back to review by resetting its export status
+ * This handles both file exports (status = 'exported') and accounting exports (sync records)
+ */
+export async function moveTransactionToReview(
+  db: Database,
+  params: { transactionId: string; teamId: string },
+): Promise<void> {
+  // Reset status if it's 'exported' (file export)
+  await db
+    .update(transactions)
+    .set({ status: "posted" })
+    .where(
+      and(
+        eq(transactions.id, params.transactionId),
+        eq(transactions.teamId, params.teamId),
+        eq(transactions.status, "exported"),
+      ),
+    );
+
+  // Delete accounting sync records (accounting export)
+  await db
+    .delete(accountingSyncRecords)
+    .where(
+      and(
+        eq(accountingSyncRecords.transactionId, params.transactionId),
+        eq(accountingSyncRecords.teamId, params.teamId),
+      ),
+    );
 }

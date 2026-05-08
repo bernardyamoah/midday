@@ -1,7 +1,6 @@
 "use client";
 
-import { useZodForm } from "@/hooks/use-zod-form";
-import { useTRPC } from "@/trpc/client";
+import { LogEvents } from "@midday/events/events";
 import { Button } from "@midday/ui/button";
 import { Form, FormControl, FormField, FormItem } from "@midday/ui/form";
 import { Input } from "@midday/ui/input";
@@ -14,10 +13,13 @@ import {
 } from "@midday/ui/select";
 import { SubmitButton } from "@midday/ui/submit-button";
 import { useToast } from "@midday/ui/use-toast";
+import { useOpenPanel } from "@openpanel/nextjs";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useFieldArray } from "react-hook-form";
-import { z } from "zod";
+import { z } from "zod/v3";
+import { useZodForm } from "@/hooks/use-zod-form";
+import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
   invites: z.array(
@@ -37,10 +39,15 @@ export function InviteForm({ onSuccess, skippable = true }: InviteFormProps) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const { track } = useOpenPanel();
 
   const inviteMutation = useMutation(
     trpc.team.invite.mutationOptions({
       onSuccess: (data) => {
+        if (data.sent > 0) {
+          track(LogEvents.MemberInvited.name, { count: data.sent });
+        }
+
         queryClient.invalidateQueries({
           queryKey: trpc.team.teamInvites.queryKey(),
         });

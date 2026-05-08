@@ -1,7 +1,5 @@
 "use client";
 
-import { useCustomerParams } from "@/hooks/use-customer-params";
-import { useTRPC } from "@/trpc/client";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,22 +20,24 @@ import {
 import { Icons } from "@midday/ui/icons";
 import { Sheet, SheetContent, SheetHeader } from "@midday/ui/sheet";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCustomerParams } from "@/hooks/use-customer-params";
+import { useTRPC } from "@/trpc/client";
 import { CustomerForm } from "../forms/customer-form";
 
 export function CustomerEditSheet() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { setParams, customerId } = useCustomerParams();
+  const { setParams, customerId, details } = useCustomerParams();
 
-  const isOpen = Boolean(customerId);
+  const isOpen = Boolean(customerId && !details);
 
   const { data: customer } = useQuery(
     trpc.customers.getById.queryOptions(
       { id: customerId! },
       {
         enabled: isOpen,
-        staleTime: 0, // Always consider data stale so it always refetches
-        initialData: () => {
+        staleTime: 30 * 1000, // 30 seconds - prevents excessive refetches when reopening
+        placeholderData: () => {
           const pages = queryClient
             .getQueriesData({ queryKey: trpc.customers.get.infiniteQueryKey() })
             // @ts-expect-error

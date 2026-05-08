@@ -17,21 +17,31 @@ export const teamResponseSchema = z.object({
     description: "Current subscription plan of the team",
     example: "pro",
   }),
-  // subscriptionStatus: z
-  //   .enum([
-  //     "active",
-  //     "canceled",
-  //     "past_due",
-  //     "unpaid",
-  //     "trialing",
-  //     "incomplete",
-  //     "incomplete_expired",
-  //   ])
-  //   .nullable()
-  //   .openapi({
-  //     description: "Current subscription status of the team",
-  //     example: "active",
-  //   }),
+  email: z.string().email().nullable().optional().openapi({
+    description: "Primary contact email address for the team",
+    example: "team@acme.com",
+  }),
+  baseCurrency: z.string().nullable().optional().openapi({
+    description:
+      "Base currency for the team in ISO 4217 format (3-letter currency code)",
+    example: "USD",
+  }),
+  countryCode: z.string().nullable().optional().openapi({
+    description: "Country code for the team in ISO 3166-1 alpha-2 format",
+    example: "US",
+  }),
+  fiscalYearStartMonth: z
+    .number()
+    .int()
+    .min(1)
+    .max(12)
+    .nullable()
+    .optional()
+    .openapi({
+      description:
+        "Month when the fiscal year starts (1-12). Null for trailing 12 months.",
+      example: 1,
+    }),
 });
 
 export const teamsResponseSchema = z.object({
@@ -59,6 +69,24 @@ export const getTeamByIdSchema = z.object({
     }),
 });
 
+/**
+ * Validates that a URL is hosted on a trusted midday.ai domain.
+ * Prevents SSRF by checking the hostname, not just URL contents.
+ */
+function isValidMiddayUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    const hostname = parsed.hostname.toLowerCase();
+    return (
+      hostname === "cdn.midday.ai" ||
+      hostname === "midday.ai" ||
+      hostname.endsWith(".midday.ai")
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const updateTeamByIdSchema = z.object({
   name: z.string().min(2).max(32).optional().openapi({
     description:
@@ -72,8 +100,8 @@ export const updateTeamByIdSchema = z.object({
   logoUrl: z
     .string()
     .url()
-    .refine((url) => url.includes("midday.ai"), {
-      message: "logoUrl must be a midday.ai domain URL",
+    .refine(isValidMiddayUrl, {
+      message: "logoUrl must be hosted on midday.ai domain",
     })
     .optional()
     .openapi({
@@ -90,17 +118,64 @@ export const updateTeamByIdSchema = z.object({
     description: "Country code for the team",
     example: "US",
   }),
+  fiscalYearStartMonth: z
+    .number()
+    .int()
+    .min(1)
+    .max(12)
+    .nullable()
+    .optional()
+    .openapi({
+      description:
+        "Month when the fiscal year starts (1-12). Null for trailing 12 months. Defaults based on country if not specified.",
+      example: 4,
+    }),
   exportSettings: z
     .object({
       csvDelimiter: z.string(),
       includeCSV: z.boolean(),
       includeXLSX: z.boolean(),
       sendEmail: z.boolean(),
+      sendCopyToMe: z.boolean().optional(),
       accountantEmail: z.string().optional(),
     })
     .optional()
     .openapi({
       description: "Export settings for transactions",
+    }),
+  companyType: z
+    .enum([
+      "freelancer",
+      "solo_founder",
+      "small_team",
+      "startup",
+      "agency",
+      "ecommerce",
+      "creator",
+      "non_profit",
+      "accountant",
+      "exploring",
+    ])
+    .optional()
+    .openapi({
+      description: "Type of company or team",
+      example: "solo_founder",
+    }),
+  heardAbout: z
+    .enum([
+      "twitter",
+      "youtube",
+      "friend",
+      "google",
+      "blog",
+      "podcast",
+      "github",
+      "other",
+    ])
+    .optional()
+    .openapi({
+      description: "How the user heard about the product",
+      example: "twitter",
     }),
 });
 
@@ -118,10 +193,54 @@ export const createTeamSchema = z.object({
     description: "Country code for the team",
     example: "US",
   }),
+  fiscalYearStartMonth: z
+    .number()
+    .int()
+    .min(1)
+    .max(12)
+    .nullable()
+    .optional()
+    .openapi({
+      description:
+        "Month when the fiscal year starts (1-12). Null for trailing 12 months. Will default based on country if not specified.",
+      example: 4,
+    }),
   logoUrl: z.string().url().optional().openapi({
     description: "URL to the team's logo image",
     example: "https://cdn.midday.ai/logos/acme-corp.png",
   }),
+  companyType: z
+    .enum([
+      "freelancer",
+      "solo_founder",
+      "small_team",
+      "startup",
+      "agency",
+      "ecommerce",
+      "creator",
+      "non_profit",
+      "accountant",
+      "exploring",
+    ])
+    .openapi({
+      description: "Type of company or team",
+      example: "solo_founder",
+    }),
+  heardAbout: z
+    .enum([
+      "twitter",
+      "youtube",
+      "friend",
+      "google",
+      "blog",
+      "podcast",
+      "github",
+      "other",
+    ])
+    .openapi({
+      description: "How the user heard about the product",
+      example: "twitter",
+    }),
   switchTeam: z.boolean().optional().default(false).openapi({
     description:
       "Whether to automatically switch the user to the newly created team",
